@@ -407,7 +407,7 @@ transformFName loc fname ft = do
         (Nothing, Nothing) -> pure $ var fname t'
         -- A polymorphic function.
         (Nothing, Just funbind) -> do
-          (fname', infer, funbind') <- monomorphiseBinding funbind mono_t
+          (fname', infer, funbind') <- monomorphiseBinding (removeEntryPoint funbind) mono_t
           addValBind funbind'
           addLifted (qualLeaf fname) mono_t (fname', infer)
           applySizeArgs fname' (toRes Nonunique t') <$> infer t'
@@ -1008,6 +1008,10 @@ arrowArg scope argset args_params rety =
       Array u shape $ arrowCleanScalar paramed scalar
     arrowCleanType paramed (Scalar ty) =
       Scalar $ arrowCleanScalar paramed ty
+
+removeEntryPoint :: PolyBinding -> PolyBinding
+removeEntryPoint (PolyBinding (_, name, tparams, params, rettype, body, attrs, loc))
+  = PolyBinding (Nothing, name, tparams, params, rettype, body, attrs, loc)
 
 -- Monomorphise a polymorphic function at the types given in the instance
 -- list. Monomorphises the body of the function as well. Returns the fresh name
