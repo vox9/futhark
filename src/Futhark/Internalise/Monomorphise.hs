@@ -407,7 +407,7 @@ transformFName loc fname ft = do
         (Nothing, Nothing) -> pure $ var fname t'
         -- A polymorphic function.
         (Nothing, Just funbind) -> do
-          (fname', infer, funbind') <- monomorphiseBinding (removeEntryPoint funbind) mono_t
+          (fname', infer, funbind') <- monomorphiseBinding funbind mono_t
           addValBind funbind'
           addLifted (qualLeaf fname) mono_t (fname', infer)
           applySizeArgs fname' (toRes Nonunique t') <$> infer t'
@@ -1232,7 +1232,9 @@ transformValBind valbind = do
 
   pure
     env
-      { envPolyBindings = M.insert (valBindName valbind) valbind' $ envPolyBindings env,
+      { envPolyBindings =
+          M.insert (valBindName valbind) (removeEntryPoint valbind') $
+            envPolyBindings env,
         envGlobalScope = global <> envGlobalScope env,
         envScope =
           S.insert (valBindName valbind) global
