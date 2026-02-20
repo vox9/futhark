@@ -1010,8 +1010,8 @@ arrowArg scope argset args_params rety =
       Scalar $ arrowCleanScalar paramed ty
 
 removeEntryPoint :: PolyBinding -> PolyBinding
-removeEntryPoint (PolyBinding (_, name, tparams, params, rettype, body, attrs, loc))
-  = PolyBinding (Nothing, name, tparams, params, rettype, body, attrs, loc)
+removeEntryPoint (PolyBinding (_, name, tparams, params, rettype, body, attrs, loc)) =
+  PolyBinding (Nothing, name, tparams, params, rettype, body, attrs, loc)
 
 -- Monomorphise a polymorphic function at the types given in the instance
 -- list. Monomorphises the body of the function as well. Returns the fresh name
