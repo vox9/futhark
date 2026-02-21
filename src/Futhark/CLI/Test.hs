@@ -230,9 +230,11 @@ testWarnings warnings futerr = accErrors_ $ map testWarning warnings
               <> T.decodeUtf8 futerr
       | otherwise = pure ()
 
-runInterpretedEntry :: FutharkExe -> FilePath -> InputOutputs -> TestM ()
-runInterpretedEntry (FutharkExe futhark) program (InputOutputs entry run_cases) =
+runInterpretedEntry :: FutharkExe -> FilePath -> [FilePath] -> InputOutputs -> TestM ()
+runInterpretedEntry (FutharkExe futhark) program externals (InputOutputs entry run_cases) =
   let dir = takeDirectory program
+      externOpts = concatMap (\x -> ["-f", x]) externals
+      opts = ["run", "-e", T.unpack entry] ++ externOpts ++ [program]
       runInterpretedCase run@(TestRun _ inputValues _ index _) =
         unless (any (`elem` runTags run) ["compiled", "script"]) $
           context ("Entry point: " <> entry <> "; dataset: " <> runDescription run) $ do
@@ -240,7 +242,7 @@ runInterpretedEntry (FutharkExe futhark) program (InputOutputs entry run_cases) 
             expectedResult' <- getExpectedResult (FutharkExe futhark) program entry run
             (code, output, err) <-
               liftIO $
-                readProcessWithExitCode futhark ["run", "-e", T.unpack entry, program] $
+                readProcessWithExitCode futhark opts $
                   T.encodeUtf8 input
             case code of
               ExitFailure 127 ->
@@ -323,7 +325,7 @@ runTestCase (TestCase mode program testcase progs) = do
       when (mode == Interpreted) $
         context "Interpreting" $
           accErrors_ $
-            map (runInterpretedEntry (FutharkExe futhark) program) ios
+            map (runInterpretedEntry (FutharkExe futhark) program $ testExternals testcase) ios
 
 liftCommand ::
   (MonadError T.Text m, MonadIO m) =>
@@ -483,8 +485,8 @@ excludeCases :: TestConfig -> TestCase -> TestCase
 excludeCases config tcase =
   tcase {testCaseTest = onTest $ testCaseTest tcase}
   where
-    onTest (ProgramTest desc tags action) =
-      ProgramTest desc tags $ onAction action
+    onTest (ProgramTest desc tags externals action) =
+      ProgramTest desc tags externals $ onAction action
     onAction (RunCases ios stest wtest) =
       RunCases (map onIOs $ filter relevantEntry ios) stest wtest
     onAction action = action

@@ -141,6 +141,7 @@ import Language.Futhark.Parser.Monad
       '\'~'           { L $$ APOSTROPHE_THEN_TILDE }
       '`'             { L $$ BACKTICK }
       entry           { L $$ ENTRY }
+      extern          { L $$ EXTERN }
       '->'            { L $$ RIGHT_ARROW }
       ':'             { L $$ COLON }
       ':>'            { L $$ COLON_GT }
@@ -416,6 +417,11 @@ Val     : def BindingId TypeParams FunParams maybeAscription(TypeExp) '=' Exp
           { let (name, loc) = $2
             in ValBind (Just NoInfo) name $5 NoInfo
                $3 $4 $7 Nothing mempty (srcspan $1 $>) }
+
+        | extern BindingId TypeParams FunParams ':' TypeExp
+          { let (name, loc) = $2
+            in ValBind (Just NoInfo) name (Just $6) NoInfo
+               $3 $4 (Hole NoInfo (srclocOf $1)) Nothing mempty (srcspan $1 $>) } -- TODO: No hole
 
         | def FunParam BindingBinOp FunParam maybeAscription(TypeExp) '=' Exp
           { ValBind Nothing $3 $5 NoInfo [] [$2,$4] $7
@@ -700,9 +706,6 @@ LetExp :: { UncheckedExp }
      | let id '...[' DimIndices ']' '=' Exp LetBody
        { let L vloc (ID v) = $2; ident = Ident v NoInfo (srclocOf vloc)
          in AppExp (LetWith ident ident $4 $7 $8 (srcspan $1 $>)) NoInfo }
-     | let id FieldAccesses '=' Exp LetBody
-       { let L vloc (ID v) = $2; ident = Ident v NoInfo (srclocOf vloc)
-          in AppExp (LetWithField ident ident (map unLoc $3) $5 $6 (srcspan $1 $>)) NoInfo }
 
 LetBody :: { UncheckedExp }
     : in Exp %prec letprec { $2 }

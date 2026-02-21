@@ -165,6 +165,7 @@ tokens :-
   "import"                 { tokenC IMPORT }
   "type"                   { tokenC TYPE }
   "entry"                  { tokenC ENTRY }
+  "extern"                 { tokenC EXTERN }
   "module"                 { tokenC MODULE }
   "while"                  { tokenC WHILE }
   "assert"                 { tokenC ASSERT }

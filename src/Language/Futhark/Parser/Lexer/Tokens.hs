@@ -116,6 +116,7 @@ data Token
   | INCLUDE
   | IMPORT
   | ENTRY
+  | EXTERN
   | TYPE
   | MODULE
   | VAL
