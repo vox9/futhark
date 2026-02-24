@@ -19,7 +19,7 @@ import Futhark.Server qualified as S
 import Futhark.Server.Parsed qualified as S
 import Futhark.Test.Values qualified as V
 import GHC.IO.Handle (hClose)
-import Language.Futhark.Core (Name, nameToText, nameFromText, nameFromString)
+import Language.Futhark.Core (Name, nameToText, nameFromText)
 import Language.Futhark.Interpreter.FFI
 import Language.Futhark.Interpreter.FFI.Values
 import Prelude hiding (init)
@@ -37,8 +37,8 @@ toType (TLPrimitive p) = TPrimitive p
 toType (TLRecord m) = TRecord $ M.fromList $ map (second toType) m
 toType (TLSum m) = TSum $ M.fromList $ map (second $ map toType) m
 
-tupleTypeLayout :: [TypeLayout] -> TypeLayout
-tupleTypeLayout ts = TLRecord $ zip (map (nameFromString . show) ([0..] :: [Int])) ts
+--tupleTypeLayout :: [TypeLayout] -> TypeLayout
+--tupleTypeLayout ts = TLRecord $ zip (map (nameFromString . show) ([0..] :: [Int])) ts
 
 handleServerError :: Either S.CmdFailure a -> a
 handleServerError = either (\e -> error $ "TODO (89utqojfials) " ++ show e) id
@@ -219,13 +219,13 @@ call (Server s (ServerInterface t e)) n =
       withSystemTempFile "futhark-call-inputs" $ \tmpf tmpf_h -> do
         forM_ (zipWith (encode . getTypeLayout) i p) $ BL.hPutStr tmpf_h
         hClose tmpf_h
-        handleServerError <$> S.restore s tmpf (zip i' i) >>= print
+        handleServerError <$> S.restore s tmpf (zip i' i)
       
       _ <- handleServerError <$> S.call s n' o' i'
 
       withSystemTempFile "futhark-call-outputs" $ \tmpf tmpf_h -> do
         hClose tmpf_h
-        void $ S.store_ s tmpf o'
+        void $ S.store s tmpf o'
         bs <- BL.readFile tmpf
         case decodeAllOrFail (map getTypeLayout o) bs of
           Left v -> error $ "TODO (u89riqojkms) " ++ show v

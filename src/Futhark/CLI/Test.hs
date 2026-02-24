@@ -322,10 +322,17 @@ runTestCase (TestCase mode program testcase progs) = do
                 let run = runCompiledEntry (FutharkExe futhark) server program
                 concat <$> mapM run ios
 
-      when (mode == Interpreted) $
+      when (mode == Interpreted) $ do
+        let relExternals = map (makeRelativeTo program) $ testExternals testcase
+        forM_ relExternals $ \external ->
+          context ("Compiling external `" <> T.pack external <> "` with --backend=c") $ do -- TODO: Add support for more backends
+            compileTestProgram extra_compiler_options (FutharkExe futhark) "c" (external ++ ".fut") warnings
         context "Interpreting" $
           accErrors_ $
-            map (runInterpretedEntry (FutharkExe futhark) program $ testExternals testcase) ios
+            map (runInterpretedEntry (FutharkExe futhark) program relExternals) ios
+
+makeRelativeTo :: FilePath -> FilePath -> FilePath
+makeRelativeTo basePath relativePath = normalise (takeDirectory basePath </> relativePath)
 
 liftCommand ::
   (MonadError T.Text m, MonadIO m) =>

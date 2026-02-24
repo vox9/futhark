@@ -165,7 +165,6 @@ newFutharkiState cfg file = runExceptT $ do
     badOnLeft _ (Right x) = pure x
     badOnLeft p (Left err) = throwError $ p err
 
--- (a -> IO (Either I.InterpreterError a)) -> 
 runInterpreter' :: (MonadIO m) => (Name -> [I.Value] -> IO I.Value) -> F I.ExtOp a -> m (Either I.InterpreterError a)
 runInterpreter' call m = runF m (pure . Right) intOp
   where
