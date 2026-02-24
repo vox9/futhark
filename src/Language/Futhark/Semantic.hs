@@ -77,6 +77,11 @@ data FileModule = FileModule
     fileScope :: Env
   }
 
+-- TODO: ??
+instance Semigroup FileModule where
+  FileModule a1 e1 p1 s1 <> FileModule a2 e2 p2 s2 =
+    FileModule (a1 <> a2) (e1 <> e2) (Prog Nothing $ progDecs p1 <> progDecs p2) (s1 <> s2)
+
 -- | A mapping from import names to imports.  The ordering is significant.
 type Imports = [(ImportName, FileModule)]
 

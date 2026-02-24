@@ -92,7 +92,7 @@ checkDec files src env name d =
   second (fmap massage) $
     runTypeM env files' name src $ do
       (_, env', d') <- checkOneDec d
-      pure (env' <> env, d')
+      pure (env', d')
   where
     massage ((env', d'), src') =
       (env', d', src')

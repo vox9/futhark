@@ -136,61 +136,6 @@ cKind Array       = "ARRAY"
 cKind Record      = "RECORD"
 cKind Sum         = "SUM"
 
--- T.Text -> CTypeName -> TypeName -> Int -> ArrayOps
-arrayBoilerplate :: (T.Text, Type) -> (C.Definition, C.Initializer, [C.Definition])
-arrayBoilerplate (tname, TypeArray c_type_name et rank ops) =
-  let element_type_name = typeStructName et
-      type_name = typeStructName tname
-      array_name = type_name <> "_array"
-      aux_name = type_name <> "_aux"
-      info_name = et <> "_info"
-      shape_args = [[C.cexp|shape[$int:i]|] | i <- [0 .. rank - 1]]
-      dim_args = [[C.cexp|dim[$int:i]|] | i <- [0 .. rank - 1]]
-      array_new_wrap = arrayNew ops <> "_wrap"
-      array_index_wrap = arrayIndex ops <> "_wrap"
-   in ( [C.cedecl|const struct type $id:type_name;|],
-        [C.cinit|&$id:type_name|],
-        [C.cunit|
-              void* $id:array_new_wrap(struct futhark_context *ctx,
-                                       const void* p,
-                                       const typename int64_t* shape) {
-                return $id:(arrayNew ops)(ctx, p, $args:shape_args);
-              }
-              int $id:array_index_wrap(struct futhark_context *ctx,
-                                       void* o,
-                                       typename $id:c_type_name arr,
-                                       const typename int64_t* dim) {
-                return $id:(arrayIndex ops)(ctx, o, arr, $args:dim_args);
-              }
-              const struct array $id:array_name = {
-                .rank = $int:rank,
-                .element_type = &$id:element_type_name,
-                .new = (typename array_new_fn)$id:array_new_wrap,
-                .free = (typename array_free_fn)$id:(arrayFree ops),
-                .shape = (typename array_shape_fn)$id:(arrayShape ops),
-                .values = (typename array_values_fn)$id:(arrayValues ops),
-                .index = (typename array_index_fn)$id:array_index_wrap,
-              };
-              const struct array_aux $id:aux_name = {
-                .name = $string:(T.unpack tname),
-                .rank = $int:rank,
-                .info = &$id:info_name,
-                .new = (typename array_new_fn)$id:array_new_wrap,
-                .free = (typename array_free_fn)$id:(arrayFree ops),
-                .shape = (typename array_shape_fn)$id:(arrayShape ops),
-                .values = (typename array_values_fn)$id:(arrayValues ops)
-              };
-              const struct type $id:type_name = {
-                .name = $string:(T.unpack tname),
-                .restore = (typename restore_fn)restore_array,
-                .store = (typename store_fn)store_array,
-                .free = (typename free_fn)free_array,
-                .aux = &$id:aux_name,
-                .kind = $id:(cKind Array),
-                .info = &$id:array_name
-              };|]
-      )
-
 -- First component is forward declaration so we don't have to worry
 -- about ordering.
 typeBoilerplate :: Manifest -> (T.Text, Type) -> (C.Definition, C.Initializer, [C.Definition])
@@ -202,15 +147,23 @@ typeBoilerplate _ (tname, TypeArray c_type_name et rank ops) =
       info_name = et <> "_info"
       shape_args = [[C.cexp|shape[$int:i]|] | i <- [0 .. rank - 1]]
       dim_args = [[C.cexp|dim[$int:i]|] | i <- [0 .. rank - 1]]
+      array_new_aux_wrap = arrayNew ops <> "_aux_wrap"
       array_new_wrap = arrayNew ops <> "_wrap"
       array_index_wrap = arrayIndex ops <> "_wrap"
    in ( [C.cedecl|const struct type $id:type_name;|],
         [C.cinit|&$id:type_name|],
         [C.cunit|
-              void* $id:array_new_wrap(struct futhark_context *ctx,
+              void* $id:array_new_aux_wrap(struct futhark_context *ctx,
                                        const void* p,
                                        const typename int64_t* shape) {
                 return $id:(arrayNew ops)(ctx, p, $args:shape_args);
+              }
+              int $id:array_new_wrap(struct futhark_context *ctx,
+                                     void **out,
+                                     const void *ins,
+                                     const typename int64_t* shape) {
+                *out = $id:(arrayNew ops)(ctx, ins, $args:shape_args);
+                return 0; // TODO: Is this right?
               }
               int $id:array_index_wrap(struct futhark_context *ctx,
                                        void* o,
@@ -221,17 +174,15 @@ typeBoilerplate _ (tname, TypeArray c_type_name et rank ops) =
               const struct array $id:array_name = {
                 .rank = $int:rank,
                 .element_type = &$id:element_type_name,
-                .new = (typename array_new_fn)$id:array_new_wrap,
-                .free = (typename array_free_fn)$id:(arrayFree ops),
+                .new = (typename array_new_fn_)$id:array_new_wrap,
                 .shape = (typename array_shape_fn)$id:(arrayShape ops),
-                .values = (typename array_values_fn)$id:(arrayValues ops),
                 .index = (typename array_index_fn)$id:array_index_wrap,
               };
               const struct array_aux $id:aux_name = {
                 .name = $string:(T.unpack tname),
                 .rank = $int:rank,
                 .info = &$id:info_name,
-                .new = (typename array_new_fn)$id:array_new_wrap,
+                .new = (typename array_new_fn)$id:array_new_aux_wrap,
                 .free = (typename array_free_fn)$id:(arrayFree ops),
                 .shape = (typename array_shape_fn)$id:(arrayShape ops),
                 .values = (typename array_values_fn)$id:(arrayValues ops)
@@ -356,9 +307,41 @@ typeBoilerplate manifest (tname, TypeOpaque c_type_name ops extra_ops) =
             [C.cinit|&$id:sum_name|],
             Sum
           )
-    transparentDefs _ (Just (OpaqueArray       _)) = ([], [C.cinit|NULL|], Array)
-    transparentDefs _ (Just (OpaqueRecordArray _)) = ([], [C.cinit|NULL|], Array)
+    transparentDefs type_name (Just (OpaqueArray ops')) = opaqueArrayDefs type_name (opaqueArrayRank ops') (opaqueArrayElemType ops') (opaqueArrayShape ops') (opaqueArrayIndex ops')
+    transparentDefs type_name (Just (OpaqueRecordArray ops')) = opaqueArrayDefs type_name (recordArrayRank ops') (recordArrayElemType ops') (recordArrayShape ops') (recordArrayIndex ops')
     transparentDefs _ _ = ([], [C.cinit|NULL|], Scalar)
+
+    opaqueArrayDefs type_name rank et shape index =
+      let array_name = type_name <> "_array"
+          element_type_name = typeStructName et
+          new = "futhark_entry_" ++ T.unpack (zEncodeText et) ++ "_new_" ++ show rank ++ "d"
+          new_wrap = type_name <> "_new_wrap"
+          index_wrap = index <> "_wrap"
+          in_args = [[C.cexp|ins[$int:i]|] | i <- [0 .. rank - 1]]
+          dim_args = [[C.cexp|dim[$int:i]|] | i <- [0 .. rank - 1]]
+       in ( [C.cunit|
+              int $id:new_wrap(struct futhark_context *ctx,
+                               typename $id:c_type_name *out,
+                               const void *ins[],
+                               const typename int64_t *shape) {
+                return $id:new(ctx, out, $args:in_args);
+              }
+              int $id:index_wrap(struct futhark_context *ctx,
+                                 void* o,
+                                 typename $id:c_type_name arr,
+                                 const typename int64_t* dim) {
+                return $id:index(ctx, o, arr, $args:dim_args);
+              }
+              const struct array $id:array_name = {
+                .rank = $int:rank,
+                .element_type = &$id:element_type_name,
+                .new = (typename array_new_fn_)$id:new_wrap,
+                .shape = (typename array_shape_fn)$id:shape,
+                .index = (typename array_index_fn)$id:index_wrap,
+              };|],
+            [C.cinit|&$id:array_name|],
+            Array
+          )
 
 entryTypeBoilerplate :: Manifest -> ([C.Definition], [C.Initializer], [C.Definition])
 entryTypeBoilerplate manifest =

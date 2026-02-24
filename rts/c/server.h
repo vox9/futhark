@@ -21,6 +21,7 @@ typedef int (*project_fn)(struct futhark_context*, void*, const void*);
 typedef int (*variant_fn)(struct futhark_context*, const void*);
 typedef int (*new_fn)(struct futhark_context*, void**, const void*[]);
 typedef int (*destruct_fn)(struct futhark_context*, const void*[], const void*);
+typedef int (*array_new_fn_)(struct futhark_context*, void**, const void*[], const int64_t*);
 typedef void* (*array_new_fn)(struct futhark_context*, const void*, const int64_t*);
 typedef int (*array_free_fn)(struct futhark_context*, void*);
 typedef const int64_t* (*array_shape_fn)(struct futhark_context*, void*);
@@ -37,10 +38,8 @@ enum kind {
 struct array {
   int rank;
   const struct type *element_type;
-  array_new_fn new;
-  array_free_fn free;
+  array_new_fn_ new;
   array_shape_fn shape;
-  array_values_fn values;
   array_index_fn index;
 };
 
@@ -759,8 +758,8 @@ void cmd_elemtype(struct server_state *s, const char *args[]) {
 }
 
 void cmd_index(struct server_state *s, const char *args[]) {
-  const char *from_name = get_arg(args, 0);
-  const char *to_name = get_arg(args, 1);
+  const char *to_name = get_arg(args, 0);
+  const char *from_name = get_arg(args, 1);
   struct variable* from = get_variable(s, from_name);
   const struct array *a = from->value.type->info;
 
@@ -795,6 +794,83 @@ void cmd_index(struct server_state *s, const char *args[]) {
 
   struct variable* to = create_variable(s, to_name, a->element_type);
   a->index(s->ctx, value_ptr(&to->value), from->value.value.v_ptr, indices);
+}
+
+void cmd_array(struct server_state *s, const char *args[]) {
+  const char *to_name = get_arg(args, 0);
+  const char *type_name = get_arg(args, 1);
+  const struct type *type = get_type(s, type_name);
+  const struct array* a = type->info;
+  if (type->kind != ARRAY) {
+    failure();
+    printf("Not an array type\n");
+    return;
+  }
+  
+  struct variable *to = create_variable(s, to_name, type);
+  if (to == NULL) {
+    failure();
+    printf("Variable already exists: %s\n", to_name);
+    return;
+  }
+
+  int64_t* dimensions = alloca(a->rank * sizeof(int64_t));
+  int64_t size = 1;
+  for (int i = 0; i < a->rank; ++i) {
+    if (!arg_exists(args, 2+i)) {
+      failure();
+      printf("%d dimensions expected but %d values provided.\n", a->rank, i);
+      return;
+    }
+
+    const char *idx_arg = get_arg(args, 2+i);
+    char* end;
+    errno = 0;
+    int64_t idx = strtoll(idx_arg, &end, 10);
+
+    if (errno == ERANGE || *end != '\0') {
+      failure();
+      printf("Invalid size `%s` of dimension %d.\n", idx_arg, i+1);
+      return;
+    }
+
+    dimensions[i] = idx;
+    size *= idx;
+  }
+
+  int num_args = 0;
+  for (int i = 2 + a->rank; arg_exists(args, i); i++) {
+    num_args++;
+  }
+
+  if (num_args != size) {
+    failure();
+    printf("%d values expected but %d values provided.\n", size, num_args);
+    return;
+  }
+
+  const void** value_ptrs = alloca(num_args * sizeof(void*));
+
+  for (int i = 0; i < num_args; i++) {
+    struct variable* v = get_variable(s, args[2+a->rank+i]);
+
+    if (v == NULL) {
+      failure();
+      printf("Unknown variable: %s\n", args[2+a->rank+i]);
+      return;
+    }
+
+    if (strcmp(v->value.type->name, a->element_type->name) != 0) {
+      failure();
+      printf("Index %d mismatch: expected type %s, got %s\n",
+             i, a->element_type->name, v->value.type->name);
+      return;
+    }
+
+    value_ptrs[i] = value_ptr(&v->value);
+  }
+
+  a->new(s->ctx, value_ptr(&to->value), value_ptrs, dimensions);
 }
 
 void cmd_fields(struct server_state *s, const char *args[]) {
@@ -897,19 +973,17 @@ void cmd_new(struct server_state *s, const char *args[]) {
   const char *to_name = get_arg(args, 0);
   const char *type_name = get_arg(args, 1);
   const struct type *type = get_type(s, type_name);
-  struct variable *to = create_variable(s, to_name, type);
-
-  if (to == NULL) {
-    failure();
-    printf("Variable already exists: %s\n", to_name);
-    return;
-  }
-
   const struct record* r = type->info;
-
   if (type->kind != RECORD) {
     failure();
     printf("Not a record type\n");
+    return;
+  }
+
+  struct variable *to = create_variable(s, to_name, type);
+  if (to == NULL) {
+    failure();
+    printf("Variable already exists: %s\n", to_name);
     return;
   }
 
@@ -1169,6 +1243,8 @@ void process_line(struct server_state *s, char *line) {
     cmd_elemtype(s, tokens+1);
   } else if (strcmp(command, "index") == 0) {
     cmd_index(s, tokens+1);
+  } else if (strcmp(command, "array") == 0) {
+    cmd_array(s, tokens+1);
   } else if (strcmp(command, "fields") == 0) {
     cmd_fields(s, tokens+1);
   } else if (strcmp(command, "variants") == 0) {

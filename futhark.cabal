@@ -143,6 +143,7 @@ library
       Futhark.Analysis.PrimExp.Table
       Futhark.Analysis.SymbolTable
       Futhark.Analysis.UsageTable
+      Futhark.AutoImp
       Futhark.Bench
       Futhark.Builder
       Futhark.Builder.Class
@@ -246,6 +247,7 @@ library
       Futhark.Construct
       Futhark.Doc.Generator
       Futhark.Error
+      Futhark.Extras
       Futhark.Fmt.Printer
       Futhark.Fmt.Monad
       Futhark.FreshNames
