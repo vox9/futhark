@@ -55,6 +55,7 @@ import Prelude
 data ProgramTest = ProgramTest
   { testDescription :: T.Text,
     testTags :: [T.Text],
+    testExternals :: [FilePath],
     testAction :: TestAction
   }
   deriving (Show)
@@ -210,8 +211,24 @@ parseTags sep =
       pure []
     ]
 
+-- TODO: Could be better
+lFilePath :: Parser () -> Parser FilePath
+lFilePath sep =
+  lexeme sep $
+    T.unpack <$> takeWhile1P (Just "filepath-constituent character") filePathConstituent
+
+parseExternals :: Parser () -> Parser [FilePath]
+parseExternals sep =
+  choice
+    [ lexeme' "externals" *> inBraces sep (many (lFilePath sep)),
+      pure []
+    ]
+
 tagConstituent :: Char -> Bool
 tagConstituent c = isAlphaNum c || c == '_' || c == '-'
+
+filePathConstituent :: Char -> Bool
+filePathConstituent c = isAlphaNum c || c == '_' || c == '-' || c == '.'
 
 parseAction :: Parser () -> Parser TestAction
 parseAction sep =
@@ -370,7 +387,7 @@ parseMetrics sep =
 
 testSpec :: Parser () -> Parser ProgramTest
 testSpec sep =
-  ProgramTest <$> parseDescription sep <*> parseTags sep <*> parseAction sep
+  ProgramTest <$> parseDescription sep <*> parseTags sep <*> parseExternals sep <*> parseAction sep
 
 couldNotRead :: IOError -> IO (Either String a)
 couldNotRead = pure . Left . show
@@ -396,7 +413,7 @@ pProgramTest = do
     sep = void $ hspace *> optional (try $ eol *> "--" *> sep)
 
     noTest =
-      ProgramTest mempty mempty (RunCases mempty mempty mempty)
+      ProgramTest mempty mempty mempty (RunCases mempty mempty mempty)
 
     pEndOfTestBlock =
       (void eol <|> eof) *> notFollowedBy "--"

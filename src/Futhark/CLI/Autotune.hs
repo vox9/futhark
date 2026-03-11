@@ -109,9 +109,13 @@ serverOptions opts =
 checkCmd :: Either CmdFailure a -> IO a
 checkCmd = either (error . T.unpack . T.unlines . failureMsg) pure
 
+checkCmdM :: Maybe CmdFailure -> IO ()
+checkCmdM Nothing = pure ()
+checkCmdM (Just f) = error $ T.unpack $ T.unlines $ failureMsg f
+
 setTuningParam :: Server -> T.Text -> Int -> IO ()
 setTuningParam server name val =
-  void $ checkCmd . maybe (Right ()) Left =<< cmdSetTuningParam server name val
+  checkCmdM =<< cmdSetTuningParam server name val
 
 setTuningParams :: Server -> Path -> IO ()
 setTuningParams server = mapM_ (uncurry $ setTuningParam server)

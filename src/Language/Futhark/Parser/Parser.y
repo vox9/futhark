@@ -143,6 +143,7 @@ import Language.Futhark.Parser.Monad
       '\'~'           { L $$ APOSTROPHE_THEN_TILDE }
       '`'             { L $$ BACKTICK }
       entry           { L $$ ENTRY }
+      extern          { L $$ EXTERN }
       '->'            { L $$ RIGHT_ARROW }
       ':'             { L $$ COLON }
       ':>'            { L $$ COLON_GT }
@@ -413,6 +414,11 @@ Val     : def BindingId TypeParams FunParams maybeAscription(TypeExp) '=' Exp
             in ValBind Nothing name $5 NoInfo
                $3 $4 $7 Nothing mempty (srcspan $1 $>)
           }
+
+        | extern BindingId TypeParams FunParams ':' TypeExp
+          { let (name, loc) = $2
+            in ValBind (Just NoInfo) name (Just $6) NoInfo
+               $3 $4 (Hole NoInfo (srclocOf $1)) Nothing mempty (srcspan $1 $>) } -- TODO: No hole
 
         | entry BindingId TypeParams FunParams maybeAscription(TypeExp) '=' Exp
           { let (name, loc) = $2
