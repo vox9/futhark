@@ -15,7 +15,8 @@ module Language.Futhark.Interpreter.FFI.Values
 where
 
 import Data.Map qualified as M
-import Language.Futhark.Core (Name, Int8, Int16, Int32, Int64, Word8, Word16, Word32, Word64, Half, nameFromString)
+import Data.Text qualified as T
+import Language.Futhark.Core (Int8, Int16, Int32, Int64, Word8, Word16, Word32, Word64, Half, nameFromText, nameToText)
 import Language.Futhark.Interpreter.Values qualified as I
 import Language.Futhark.Syntax qualified as I
 
@@ -52,15 +53,15 @@ data PrimitiveValue
 data Type a
   = TAtom a
   | TArray Int (Type a)
-  | TRecord (M.Map Name (Type a))
-  | TSum (M.Map Name [Type a])
+  | TRecord (M.Map T.Text (Type a))
+  | TSum (M.Map T.Text [Type a])
   deriving (Show, Eq, Ord)
 
 data Value a
   = Atom a
   | Array [Int] [Value a]
-  | Record (M.Map Name (Value a))
-  | Sum Name [Value a]
+  | Record (M.Map T.Text (Value a))
+  | Sum T.Text [Value a]
   deriving (Show, Eq, Ord, Functor)
 
 type InType = Type PrimitiveType
@@ -95,17 +96,17 @@ primitiveTypeName TFloat64 = "f64"
 primitiveTypeName TBool    = "bool"
 
 toTuple :: [Value a] -> Value a
-toTuple vs = Record $ M.fromList $ zip (map (nameFromString . show) ([0..] :: [Int])) vs
+toTuple vs = Record $ M.fromList $ zip (map T.show ([0..] :: [Int])) vs
 
 toTupleType :: [Type a] -> Type a
-toTupleType ts = TRecord $ M.fromList $ zip (map (nameFromString . show) ([0..] :: [Int])) ts
+toTupleType ts = TRecord $ M.fromList $ zip (map T.show ([0..] :: [Int])) ts
 
 toInterpreterValue :: Value (Either a PrimitiveValue) -> I.Value m
 toInterpreterValue (Atom (Right v)) = I.ValuePrim $ toPrimValue v
 toInterpreterValue (Atom (Left _)) = error "TODO (8qowijans)"
-toInterpreterValue (Record m) = I.ValueRecord $ M.map toInterpreterValue m
+toInterpreterValue (Record m) = I.ValueRecord $ M.map toInterpreterValue $ M.mapKeys nameFromText m
 -- TODO: Add shape
-toInterpreterValue (Sum n v) = I.ValueSum (I.ShapeSum M.empty) n $ map toInterpreterValue v
+toInterpreterValue (Sum n v) = I.ValueSum (I.ShapeSum M.empty) (nameFromText n) $ map toInterpreterValue v
 toInterpreterValue _ = error "TODO (r1u8qoiwjlc)"
 
 toPrimValue :: PrimitiveValue -> I.PrimValue
@@ -124,8 +125,8 @@ toPrimValue (Bool    v) = I.BoolValue v
 
 fromInterpreterValue :: I.Value m -> Value PrimitiveValue
 fromInterpreterValue (I.ValuePrim v) = Atom $ fromPrimValue v
-fromInterpreterValue (I.ValueRecord m) = Record $ M.map fromInterpreterValue m
-fromInterpreterValue (I.ValueSum _ n v) = Sum n $ map fromInterpreterValue v
+fromInterpreterValue (I.ValueRecord m) = Record $ M.map fromInterpreterValue $ M.mapKeys nameToText m
+fromInterpreterValue (I.ValueSum _ n v) = Sum (nameToText n) $ map fromInterpreterValue v
 fromInterpreterValue _ = error "TODO (891yr2hiuqwfjkn)"
 
 fromPrimValue :: I.PrimValue -> PrimitiveValue

@@ -13,7 +13,6 @@ import Data.Text.IO qualified as T
 import Futhark.Compiler
 import Futhark.Data.Reader (readValues)
 import Futhark.Pipeline
-import Language.Futhark.Interpreter.FFI qualified as S
 import Language.Futhark.Interpreter.FFI.Server qualified as S
 import Language.Futhark.Interpreter.FFI.Server.Packer qualified as SP
 import Language.Futhark.Interpreter.FFI.Values qualified as S

@@ -7,16 +7,15 @@ module Language.Futhark.Interpreter.FFI.Server.Packer
   )
 where
 
-import Control.Arrow (Arrow (first, second))
+import Control.Arrow (Arrow (second))
 import Control.Monad (forM, zipWithM, forM_, void)
 import Control.Monad.Reader (ReaderT (runReaderT), MonadReader (ask), MonadIO (liftIO))
-import Control.Monad.State (State, MonadState, modify, runState, MonadTrans (lift), gets, StateT (runStateT))
+import Control.Monad.State (modify, MonadTrans (lift), gets, StateT (runStateT))
 import Data.Binary qualified as B
 import Data.ByteString.Lazy qualified as BL
 import Data.Map qualified as M
 import Data.Maybe (fromJust)
 import Data.Text qualified as T
-import Futhark.CodeGen.Backends.GenericPython.AST (nameFromText, nameToText)
 import Futhark.Server qualified as S
 import Futhark.Test.Values qualified as V
 import Futhark.Util.BiMap qualified as BM
@@ -64,11 +63,11 @@ pack f tid v = do
   where
     pack' l (Atom a) = f l a
     pack' (TLRecord fs) (Record m) = do
-      ms <- mapM (\(n, t) -> pack f t $ fromJust $ M.lookup (nameFromText n) m) fs
-      let m' = M.fromList $ zip (map (nameFromText . fst) fs) ms
+      ms <- mapM (\(n, t) -> pack f t $ fromJust $ M.lookup n m) fs
+      let m' = M.fromList $ zip (map fst fs) ms
       pure $ Record m'
     pack' (TLSum m) (Sum svn svs) = do
-      let ts = fromJust $ M.lookup (nameToText svn) m
+      let ts = fromJust $ M.lookup svn m
       svs' <- zipWithM (pack f) ts svs
       pure $ Sum svn svs'
     pack' _ _ = error "TODO: (9r8uqowfijlas)" -- Array or mismatch
@@ -87,13 +86,13 @@ fEx (TLRecord f) vid = do
     fvid <- lift $ FS.getValueID
     void $ liftIO $ S.cmdProject s (toVar fvid) (toVar vid) n
     pure fvid
-  Record . M.fromList . zip (map (nameFromText . fst) f) <$> zipWithM (pack fEx) (map snd f) (map Atom vids)
+  Record . M.fromList . zip (map fst f) <$> zipWithM (pack fEx) (map snd f) (map Atom vids)
 fEx (TLSum m) vid = do
   s <- lift $ FS.server
   vn <- either (error "TODO (uojdqlamk") id <$> liftIO (S.cmdVariant s (toVar vid))
   let ts = fromJust $ M.lookup vn m
   vids <- forM ts $ const $ lift $ FS.getValueID
-  Sum (nameFromText vn) <$> zipWithM (pack fEx) ts (map Atom vids)
+  Sum vn <$> zipWithM (pack fEx) ts (map Atom vids)
 fEx _ vid = pure $ Atom $ Left vid
 
 packAll :: Monad m => (TypeLayout -> a -> PackerT v m (Value b)) -> [(ExTypeID, Value a)] -> PackerT v m [Value b]
@@ -126,14 +125,14 @@ load (s, i) ps vs = do
     load' _ (_, _, Atom (Left vid)) = pure vid
     load' vids (_, _, Atom (Right idx)) = pure $ vids !! idx
     load' vids (tid, TLRecord r, Record m) = do
-      k <- forM r $ load' vids . \(n, t) -> (t, look t, fromJust $ M.lookup (nameFromText n) m)
+      k <- forM r $ load' vids . \(n, t) -> (t, look t, fromJust $ M.lookup n m)
       o <- FS.getValueID
       void $ liftIO $ S.cmdNew s (toVar o) (fromJust $ BM.lookupLeft tid $ siType i) $ map toVar k
       pure o
     load' vids (tid, TLSum m, Sum vn vvs) = do
-      k <- forM (zip (fromJust $ M.lookup (nameToText vn) m) vvs) $ load' vids . \(t, v) -> (t, look t, v)
+      k <- forM (zip (fromJust $ M.lookup vn m) vvs) $ load' vids . \(t, v) -> (t, look t, v)
       o <- FS.getValueID
-      void $ liftIO $ S.cmdConstruct s (toVar o) (fromJust $ BM.lookupLeft tid $ siType i) (nameToText vn) $ map toVar k
+      void $ liftIO $ S.cmdConstruct s (toVar o) (fromJust $ BM.lookupLeft tid $ siType i) vn $ map toVar k
       pure o
     load' _ _ = error "TODO (y8euiqdhjkanx)"
 
@@ -173,9 +172,9 @@ unload i vs k = do
     unload' pvs (_, TLPrimitive _, Atom (Right idx)) = Atom $ Right $ pvs !! idx
     unload' _ (_, TLOpaque, Atom (Left vid)) = Atom $ Left vid
     unload' pvs (_, TLRecord f, Record m) =
-      Record $ M.fromList $ zip (map (nameFromText . fst) f) $ map (\(n, t) -> unload' pvs (t, look t, fromJust $ M.lookup (nameFromText n) m)) f
+      Record $ M.fromList $ zip (map fst f) $ map (\(n, t) -> unload' pvs (t, look t, fromJust $ M.lookup n m)) f
     unload' pvs (_, TLSum m, Sum vn vvs) =
-      Sum vn $ zipWith (\t v -> unload' pvs (t, look t, v)) (fromJust $ M.lookup (nameToText vn) m) vvs
+      Sum vn $ zipWith (\t v -> unload' pvs (t, look t, v)) (fromJust $ M.lookup vn m) vvs
     unload' _ _ = error "TODO (u8rqowijdalkcm)"
 
 toVar :: ExValueID -> S.VarName
@@ -216,4 +215,4 @@ call n vs = do
 
     tuple' :: [ExValue] -> ExValue
     tuple' [v] = v
-    tuple' vs = toTuple vs
+    tuple' vs'' = toTuple vs''
