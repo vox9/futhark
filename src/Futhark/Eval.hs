@@ -32,12 +32,18 @@ import Language.Futhark.Parser.Monad (SyntaxError (SyntaxError))
 import Language.Futhark.Pretty (toName)
 import Language.Futhark.Prop (typeOf)
 import Language.Futhark.Semantic qualified as T
-import Language.Futhark.Syntax (nameToText, typeParamName)
+import Language.Futhark.Syntax (nameToText, typeParamName, VName (VName), ProgBase (progDecs), DecBase (ValDec), ValBindBase (ValBind), nameToString, nameFromString)
 import Language.Futhark.TypeChecker qualified as T
 import Prettyprinter (Doc, align, pretty, unAnnotate, vcat, (<+>))
 import Prettyprinter.Render.Terminal (AnsiStyle)
 import System.Exit (ExitCode (ExitFailure), exitWith)
 import System.IO (stderr)
+import Language.Futhark.Interpreter.FFI qualified as S
+import Language.Futhark.Interpreter.FFI.ExID qualified as S
+import Language.Futhark.Interpreter.FFI.Server qualified as S
+import Language.Futhark.Interpreter.FFI.Server.Packer qualified as SP
+import Language.Futhark.Interpreter.FFI.Server (FutharkServer)
+import Control.Arrow (Arrow(second))
 
 -- | The class of monads that can perform expression evaluation.
 class (Monad m) => Evaluation m where
@@ -78,17 +84,17 @@ runEvalRecordRef ::
 runEvalRecordRef msgRef (EvalRecordRef action) =
   flip runReaderT msgRef $ runExceptT action
 
-newtype InterpreterState = InterpreterState (VNameSource, T.Env, I.Ctx)
+newtype InterpreterState = InterpreterState (VNameSource, T.Env, I.Ctx, Maybe FutharkServer)
 
 -- | Run an expression in the given interpreter state. The expression is parsed,
 -- type checked, and then run. Returns a prettyprinted result. Must be run in a
 -- monad that supports aborting and traces.
 runExpr ::
-  (Evaluation m) =>
+  (Evaluation m, MonadIO m) =>
   InterpreterState ->
   T.Text ->
   m (Doc AnsiStyle)
-runExpr (InterpreterState (src, env, ctx)) str = do
+runExpr (InterpreterState (src, env, ctx, s)) str = do
   uexp <- case parseExp "" str of
     Left (SyntaxError _ serr) -> abort $ pretty serr
     Right e -> pure e
@@ -103,7 +109,15 @@ runExpr (InterpreterState (src, env, ctx)) str = do
             "The following types are ambiguous: "
               <> commasep (map (pretty . nameToText . toName . typeParamName) tparams)
           ]
-  pval <- runInterpreterNoBreak $ I.interpretExp ctx fexp
+  let call (VName n _) p = case s of
+        Just s' -> do
+          let p' = map S.fromInterpreterValue p
+          S.toInterpreterValue <$> S.runFutharkServerM (SP.call (nameToText n) p') s'
+        Nothing -> error "TODO (uqr8wijoa)" -- No server
+  let realize vid = case s of
+        Just s' -> S.toInterpreterValue <$> S.runFutharkServerM (SP.realize vid) s'
+        Nothing -> error "TODO (uqr8wijoa)" -- No server
+  pval <- runInterpreterNoBreak call realize $ I.interpretExp ctx fexp
   case pval of
     Left err -> do
       abort $ I.prettyInterpreterError err
@@ -136,34 +150,56 @@ newFutharkiState cfg maybe_file vfs = runExceptT $ do
       hPutDoc stderr $
         prettyWarnings ws
 
+  let modifyLast _ []     = []
+      modifyLast f [x]    = [f x]
+      modifyLast f (x:xs) = x : modifyLast f xs
+
+  (imports', s) <- case maybe_file of
+        Just file -> liftIO $
+          -- TODO: This relies quite heavily on a bunch of imports, but hey, it's a start
+          let mdec (ValDec (ValBind (Just a) (VName vn vi) c d e f g h i j)) = ValDec (ValBind (Just a) (VName (nameFromString $ "$" ++ nameToString vn) vi) c d e f g h i j)
+              mdec o = o
+              (_, m) = last imports
+              m' = m { fileProg = (fileProg m) { progDecs = map mdec $ progDecs $ fileProg m} }
+          in (modifyLast (second $ const m') imports,) . Just <$> S.startServer (take (length file - 4) file)
+        Nothing -> pure (imports, Nothing)
+
   ictx <-
     let foldFile ctx =
           badOnLeft I.prettyInterpreterError
-            <=< runInterpreterNoBreak
+            <=< runInterpreterNoBreak (const $ const $ error "TODO: Not needed?")
               . I.interpretImport ctx
      in foldM foldFile I.initialCtx $
-          map (fmap fileProg) imports
+          map (fmap fileProg) imports'
 
   let (tenv, ienv) =
-        let (iname, fm) = last imports
+        let (iname, fm) = last imports'
          in ( fileScope fm,
               ictx {I.ctxEnv = I.ctxImports ictx M.! iname}
             )
 
-  pure $ InterpreterState (src, tenv, ienv)
+  pure $ InterpreterState (src, tenv, ienv, s)
   where
     badOnLeft :: (Monad m) => (err -> err') -> Either err a -> ExceptT err' m a
     badOnLeft _ (Right x) = pure x
     badOnLeft p (Left err) = throwError $ p err
 
 runInterpreterNoBreak ::
-  (Evaluation m) =>
+  (Evaluation m, MonadIO m) =>
+  (VName -> [I.Value] -> IO I.Value) -> 
+  (S.ExValueID -> IO I.Value) -> 
   F I.ExtOp a ->
   m (Either I.InterpreterError a)
-runInterpreterNoBreak m = runF m (pure . Right) intOp
+runInterpreterNoBreak call realize m = runF m (pure . Right) intOp
   where
     intOp (I.ExtOpError err) = pure $ Left err
     intOp (I.ExtOpTrace w v c) = do
       trace $ pretty w <> ":" <+> align (unAnnotate v)
       c
     intOp (I.ExtOpBreak _ _ _ c) = c
+    intOp (I.ExtOpCall n p c) = do
+      r <- liftIO $ call n p
+      c r
+    intOp (I.ExtOpRealize vid c) = do
+      r <- liftIO $ realize vid
+      c r

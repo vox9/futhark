@@ -9,15 +9,15 @@ module Language.Futhark.Interpreter.FFI.Values
     primitiveTypeName,
     toTuple,
     toTupleType,
-    toInterpreterValue,
-    fromInterpreterValue,
+    toPrimValue,
+    fromPrimValue
   )
 where
 
+import Data.Array qualified as A
 import Data.Map qualified as M
 import Data.Text qualified as T
-import Language.Futhark.Core (Int8, Int16, Int32, Int64, Word8, Word16, Word32, Word64, Half, nameFromText, nameToText)
-import Language.Futhark.Interpreter.Values qualified as I
+import Language.Futhark.Core (Int8, Int16, Int32, Int64, Word8, Word16, Word32, Word64, Half)
 import Language.Futhark.Syntax qualified as I
 
 data PrimitiveType
@@ -59,7 +59,7 @@ data Type a
 
 data Value a
   = Atom a
-  | Array [Int] [Value a]
+  | Array (A.Array Int (Value a))
   | Record (M.Map T.Text (Value a))
   | Sum T.Text [Value a]
   deriving (Show, Eq, Ord, Functor)
@@ -101,14 +101,6 @@ toTuple vs = Record $ M.fromList $ zip (map T.show ([0..] :: [Int])) vs
 toTupleType :: [Type a] -> Type a
 toTupleType ts = TRecord $ M.fromList $ zip (map T.show ([0..] :: [Int])) ts
 
-toInterpreterValue :: Value (Either a PrimitiveValue) -> I.Value m
-toInterpreterValue (Atom (Right v)) = I.ValuePrim $ toPrimValue v
-toInterpreterValue (Atom (Left _)) = error "TODO (8qowijans)"
-toInterpreterValue (Record m) = I.ValueRecord $ M.map toInterpreterValue $ M.mapKeys nameFromText m
--- TODO: Add shape
-toInterpreterValue (Sum n v) = I.ValueSum (I.ShapeSum M.empty) (nameFromText n) $ map toInterpreterValue v
-toInterpreterValue _ = error "TODO (r1u8qoiwjlc)"
-
 toPrimValue :: PrimitiveValue -> I.PrimValue
 toPrimValue (Int8    v) = I.SignedValue   $ I.Int8Value  v
 toPrimValue (Int16   v) = I.SignedValue   $ I.Int16Value v
@@ -122,12 +114,6 @@ toPrimValue (Float16 v) = I.FloatValue    $ I.Float16Value v
 toPrimValue (Float32 v) = I.FloatValue    $ I.Float32Value v
 toPrimValue (Float64 v) = I.FloatValue    $ I.Float64Value v
 toPrimValue (Bool    v) = I.BoolValue v
-
-fromInterpreterValue :: I.Value m -> Value PrimitiveValue
-fromInterpreterValue (I.ValuePrim v) = Atom $ fromPrimValue v
-fromInterpreterValue (I.ValueRecord m) = Record $ M.map fromInterpreterValue $ M.mapKeys nameToText m
-fromInterpreterValue (I.ValueSum _ n v) = Sum (nameToText n) $ map fromInterpreterValue v
-fromInterpreterValue _ = error "TODO (891yr2hiuqwfjkn)"
 
 fromPrimValue :: I.PrimValue -> PrimitiveValue
 fromPrimValue (I.SignedValue   (I.Int8Value    v)) = Int8    v

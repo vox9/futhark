@@ -30,7 +30,7 @@ import Language.Futhark.Interpreter.FFI.Values
 import Prelude hiding (init)
 import System.IO.Temp (withSystemTempFile)
 import Data.Functor.Identity (Identity (runIdentity))
-import qualified Data.Binary.Get as B
+import Data.Binary.Get qualified as B
 
 newtype PackerT v m a = PackerT (ReaderT ServerInterface (StateT [v] m) a)
   deriving (Functor, Applicative, Monad, MonadIO)
@@ -179,6 +179,13 @@ unload i vs k = do
 
 toVar :: ExValueID -> S.VarName
 toVar v = "v" <> T.show (exValueID v)
+
+realize :: ExValueID -> FutharkServerM ExValue
+realize vid = do
+  st <- FS.state
+  si <- FS.interface
+  (ovs, oids) <- runPackerT (packAll fEx $ zip o $ map Atom o') si
+  unload si oids (zip o ovs)
 
 call :: S.EntryName -> [ExValue] -> FutharkServerM ExValue
 call n vs = do

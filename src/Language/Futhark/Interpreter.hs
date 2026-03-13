@@ -59,6 +59,7 @@ import Futhark.Util.Pretty hiding (apply)
 import Language.Futhark hiding (Shape, matchDims)
 import Language.Futhark qualified as F
 import Language.Futhark.Interpreter.AD qualified as AD
+import Language.Futhark.Interpreter.FFI.ExID (ExValueID)
 import Language.Futhark.Interpreter.Values hiding (Value)
 import Language.Futhark.Interpreter.Values qualified
 import Language.Futhark.Primitive (floatValue, intValue)
@@ -86,15 +87,15 @@ data ExtOp a
   = ExtOpTrace T.Text (Doc ()) a
   | ExtOpBreak Loc BreakReason (NE.NonEmpty StackFrame) a
   | ExtOpError InterpreterError
-  | ExtOpCall Name [Value] (Value -> a)
-  | ExtOpRealize a
+  | ExtOpCall VName [Value] (Value -> a)
+  | ExtOpRealize ExValueID (Value -> a)
 
 instance Functor ExtOp where
   fmap f (ExtOpTrace w s x) = ExtOpTrace w s $ f x
   fmap f (ExtOpBreak w why backtrace x) = ExtOpBreak w why backtrace $ f x
   fmap _ (ExtOpError err) = ExtOpError err
   fmap f (ExtOpCall n p c) = ExtOpCall n p $ f . c
-  fmap f (ExtOpRealize v) = ExtOpRealize $ f v
+  fmap f (ExtOpRealize vid c) = ExtOpRealize vid $ f . c
 
 type Stack = [StackFrame]
 
@@ -1237,18 +1238,26 @@ evalModExp env (ModApply f e (Info psubst) (Info rsubst) _) = do
       pure (f_env <> e_env <> res_env <> env_substs, res_mod)
     _ -> error "Expected ModuleFun."
 
-extFun :: Name -> Int -> [Value] -> Value
-extFun _ i _  | i  < 1 = error "Impossible (09itpwokl)" -- TODO
+extFun :: VName -> Int -> [Value] -> Value
+extFun _ i _  | i  < 1 = error "TODO (09itpwokl)" -- TODO: There can be "entrypoint" values!
 extFun n i vs | i == 1 = ValueFun $ \v -> liftF $ ExtOpCall n (reverse $ v : vs) id
 extFun n i vs = ValueFun $ \v -> pure $ extFun n (i - 1) (v : vs)
 
 evalDec :: Env -> Dec -> EvalM Env
-evalDec env (ValDec (ValBind (Just (Info _)) v@(VName n _) _ (Info ret) tparams ps h@(Hole _ _) _ _ _)) = localExts $ do
+evalDec env (ValDec (ValBind (Just _) (VName vn vi) _ (Info ret) tparams ps fbody _ _ _)) | "$" `T.isPrefixOf` nameToText vn = localExts $ do
+  let n = VName (nameFromText $ T.drop 1 $ nameToText vn) vi
+  binding <- evalValBinding env tparams ps ret fbody
+  case binding of
+    (TermValue (Just t) _) -> do
+      sizes <- extEnv
+      pure $ mempty {envTerm = M.singleton n $ TermValue (Just t) $ extFun n (length ps) []} <> sizes
+    _ -> error "Impossible (u839rwoifjs)" -- TODO
+evalDec env (ValDec (ValBind (Just (Info _)) n _ (Info ret) tparams ps h@(Hole _ _) _ _ _)) = localExts $ do
   binding <- evalValBinding env tparams ps ret h
   case binding of
     (TermValue (Just t) _) -> do
       sizes <- extEnv
-      pure $ mempty {envTerm = M.singleton v $ TermValue (Just t) $ extFun n (length ps) []} <> sizes
+      pure $ mempty {envTerm = M.singleton n $ TermValue (Just t) $ extFun n (length ps) []} <> sizes
     _ -> error "Impossible (u839rwoifjs)" -- TODO
 evalDec env (ValDec (ValBind _ v _ (Info ret) tparams ps fbody _ _ _)) = localExts $ do
   binding <- evalValBinding env tparams ps ret fbody

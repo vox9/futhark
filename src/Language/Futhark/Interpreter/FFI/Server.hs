@@ -1,28 +1,29 @@
 module Language.Futhark.Interpreter.FFI.Server
   ( FutharkServer (..),
-    --toVar,
     startServer,
-    --call
     FutharkServerM,
     server,
     interface,
+    state,
     getValueID,
     runFutharkServerM
   )
 where
 
 import Futhark.Server qualified as S
+import Data.Map qualified as M
 import Language.Futhark.Interpreter.FFI.Server.Explorer (exploreProgram)
 import Language.Futhark.Interpreter.FFI.Server.Interface (ServerInterface (..))
 import Prelude hiding (init)
-import Language.Futhark.Interpreter.FFI.ExID (ExIDSrcT, ExValueID)
+import Language.Futhark.Interpreter.FFI.ExID (ExIDSrcT, ExValueID, ExTypeID)
 import Language.Futhark.Interpreter.FFI.ExID qualified as EID
 import Control.Monad.Reader (ReaderT (runReaderT), asks, MonadIO, MonadReader, MonadTrans (lift))
 
 -- Server and function calling
 data FutharkServer = FutharkServer
   { fsServer :: S.Server,
-    fsInterface :: ServerInterface
+    fsInterface :: ServerInterface,
+    fsState :: M.Map ExValueID ExTypeID
   }
 
 init :: S.Server -> IO FutharkServer
@@ -43,6 +44,9 @@ server = asks fsServer
 
 interface :: FutharkServerM ServerInterface
 interface = asks fsInterface
+
+state :: FutharkServerM (M.Map ExValueID ExTypeID)
+state = asks fsState
 
 getValueID :: FutharkServerM ExValueID
 getValueID = FutharkServerM $ lift $ EID.getValueID
