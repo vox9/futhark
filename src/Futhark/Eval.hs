@@ -167,7 +167,9 @@ newFutharkiState cfg maybe_file vfs = runExceptT $ do
   ictx <-
     let foldFile ctx =
           badOnLeft I.prettyInterpreterError
-            <=< runInterpreterNoBreak (const $ const $ error "TODO: Not needed?")
+            <=< runInterpreterNoBreak
+                  (const $ const $ error "TODO: Not needed? (12e8uwqd)")
+                  (const $ error "TODO: Not needed? (21uoqdi)")
               . I.interpretImport ctx
      in foldM foldFile I.initialCtx $
           map (fmap fileProg) imports'

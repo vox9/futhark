@@ -3,7 +3,8 @@ module Language.Futhark.Interpreter.FFI.Server.Packer
     --packing,
     --packAll,
     --load,
-    call
+    call,
+    realize
   )
 where
 
@@ -180,13 +181,6 @@ unload i vs k = do
 toVar :: ExValueID -> S.VarName
 toVar v = "v" <> T.show (exValueID v)
 
-realize :: ExValueID -> FutharkServerM ExValue
-realize vid = do
-  st <- FS.state
-  si <- FS.interface
-  (ovs, oids) <- runPackerT (packAll fEx $ zip o $ map Atom o') si
-  unload si oids (zip o ovs)
-
 call :: S.EntryName -> [ExValue] -> FutharkServerM ExValue
 call n vs = do
   s <- FS.server
@@ -223,3 +217,11 @@ call n vs = do
     tuple' :: [ExValue] -> ExValue
     tuple' [v] = v
     tuple' vs'' = toTuple vs''
+
+realize :: ExValueID -> FutharkServerM ExValue
+realize vid = do
+  st <- FS.state
+  si <- FS.interface
+  let t = st M.! vid
+  (ov, oids) <- runPackerT (pack fEx t $ Atom vid) si
+  head <$> unload si oids [(t, ov)]

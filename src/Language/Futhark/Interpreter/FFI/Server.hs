@@ -22,12 +22,12 @@ import Control.Monad.Reader (ReaderT (runReaderT), asks, MonadIO, MonadReader, M
 -- Server and function calling
 data FutharkServer = FutharkServer
   { fsServer :: S.Server,
-    fsInterface :: ServerInterface,
-    fsState :: M.Map ExValueID ExTypeID
+    fsState :: M.Map ExValueID ExTypeID,
+    fsInterface :: ServerInterface
   }
 
 init :: S.Server -> IO FutharkServer
-init s = FutharkServer s <$> exploreProgram s
+init s = FutharkServer s mempty <$> exploreProgram s
 
 startServer :: FilePath -> IO FutharkServer
 startServer p = S.startServer (S.newServerCfg p []) >>= init
@@ -42,11 +42,11 @@ runFutharkServerM (FutharkServerM m) s =
 server :: FutharkServerM S.Server
 server = asks fsServer
 
-interface :: FutharkServerM ServerInterface
-interface = asks fsInterface
-
 state :: FutharkServerM (M.Map ExValueID ExTypeID)
 state = asks fsState
+
+interface :: FutharkServerM ServerInterface
+interface = asks fsInterface
 
 getValueID :: FutharkServerM ExValueID
 getValueID = FutharkServerM $ lift $ EID.getValueID

@@ -25,6 +25,7 @@ import System.Exit
 import System.FilePath
 import System.IO
 import Prelude
+import Language.Futhark.Interpreter.FFI.ExID (ExValueID)
 
 -- | Run @futhark run@.
 main :: String -> [String] -> IO ()
@@ -53,6 +54,12 @@ interpret config fp = do
         Left v -> v
         Right _ -> error "TODO (r29y7q8uwfih)"
 
+  let realize' vid = forM servers $ \s -> Left $ S.toInterpreterValue <$> S.runFutharkServerM (SP.realize vid) s
+  
+  let realize vid = case realize' vid of
+        Left v -> v
+        Right _ -> error "TODO (r29y7q8uwfih)"
+
   let entry = interpreterEntryPoint config
   vr <- readValues <$> BS.getContents
 
@@ -78,7 +85,7 @@ interpret config fp = do
       T.hPutStrLn stderr err
       exitFailure
     Right run -> do
-      run' <- runInterpreter' call run
+      run' <- runInterpreter' call realize run
       case run' of
         Left err -> do
           hPrint stderr err
@@ -151,7 +158,7 @@ newFutharkiState cfg file = runExceptT $ do
 
   let loadImport ctx =
         badOnLeft I.prettyInterpreterError
-          <=< runInterpreter' (const $ const $ error "TODO: Not needed?") . I.interpretImport ctx
+          <=< runInterpreter' (const $ const $ error "TODO: Not needed? (9y8ud)") (const $ error "TODO: Not needed? (12e0u8oi)") . I.interpretImport ctx
 
   ictx <- foldM loadImport I.initialCtx $ map (fmap fileProg) imports
   let (tenv, ienv) =
@@ -166,8 +173,8 @@ newFutharkiState cfg file = runExceptT $ do
     badOnLeft _ (Right x) = pure x
     badOnLeft p (Left err) = throwError $ p err
 
-runInterpreter' :: (MonadIO m) => (VName -> [I.Value] -> IO I.Value) -> F I.ExtOp a -> m (Either I.InterpreterError a)
-runInterpreter' call m = runF m (pure . Right) intOp
+runInterpreter' :: (MonadIO m) => (VName -> [I.Value] -> IO I.Value) -> (ExValueID -> IO I.Value) -> F I.ExtOp a -> m (Either I.InterpreterError a)
+runInterpreter' call realize m = runF m (pure . Right) intOp
   where
     intOp (I.ExtOpError err) = pure $ Left err
     intOp (I.ExtOpTrace w v c) = do
@@ -178,9 +185,8 @@ runInterpreter' call m = runF m (pure . Right) intOp
       r <- liftIO $ call n p
       c r
     intOp (I.ExtOpRealize vid c) = do
-      --r <- liftIO $ realize vid
-      --c r
-      error "TODO (y89uqdwojiasln)"
+      r <- liftIO $ realize vid
+      c r
 
 --callV :: Name -> [I.Value] -> IO (Either I.InterpreterError I.Value)
 --callV n ps = _
