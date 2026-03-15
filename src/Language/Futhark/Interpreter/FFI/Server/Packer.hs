@@ -1,9 +1,5 @@
 module Language.Futhark.Interpreter.FFI.Server.Packer
-  ( --runPacker,
-    --packing,
-    --packAll,
-    --load,
-    call,
+  ( call,
     realize
   )
 where
@@ -19,6 +15,7 @@ import Data.Maybe (fromJust)
 import Data.Text qualified as T
 import Futhark.Server qualified as S
 import Futhark.Test.Values qualified as V
+import Futhark.Util.NDArray qualified as ND
 import Futhark.Util.BiMap qualified as BM
 import GHC.IO.Handle (hClose)
 import Language.Futhark.Interpreter.FFI (ExValue, ExValueAtom)
@@ -63,6 +60,7 @@ pack f tid v = do
     Nothing -> error "TODO (ru98qwojialskcm)"
   where
     pack' l (Atom a) = f l a
+    pack' (TLArray t) (Array a) = Array . ND.fromList (ND.shape a) <$> mapM (pack f t) (ND.elems a)
     pack' (TLRecord fs) (Record m) = do
       ms <- mapM (\(n, t) -> pack f t $ fromJust $ M.lookup n m) fs
       let m' = M.fromList $ zip (map fst fs) ms
@@ -71,7 +69,7 @@ pack f tid v = do
       let ts = fromJust $ M.lookup svn m
       svs' <- zipWithM (pack f) ts svs
       pure $ Sum svn svs'
-    pack' _ _ = error "TODO: (9r8uqowfijlas)" -- Array or mismatch
+    pack' _ _ = error "TODO: (9r8uqowfijlas)"
 
 fIn :: TypeLayout -> ExValueAtom -> PackerM PrimitiveValue (Value (Either ExValueID Int))
 fIn (TLPrimitive _) (Right p) = Atom . Right <$> addValue p
@@ -81,6 +79,13 @@ fIn _ _ = error "TODO (u8roqjiwlfa)"
 fEx :: TypeLayout -> ExValueID -> PackerT (ExValueID, PrimitiveType) FutharkServerM (Value (Either ExValueID Int))
 fEx (TLPrimitive t) vid = Atom . Right <$> addValue (vid, t)
 fEx TLOpaque vid = pure $ Atom $ Left vid
+fEx (TLArray t) vid = do
+  s <- lift $ FS.server
+  shape <- either (error "TODO (98ueiwe)") id <$> liftIO (S.cmdShape s $ toVar vid)
+  ids <- mapM (const <$> lift $ FS.getValueID) [1..foldl (*) 1 shape]
+  let nd = ND.fromList shape ids
+  ND.mapMWithIndex_ (\i v -> liftIO $ S.cmdIndex s (toVar v) (toVar vid) i) nd
+  Array <$> mapM ((pack fEx t) . Atom) nd
 fEx (TLRecord f) vid = do
   s <- lift $ FS.server
   vids <- forM f $ \(n, _) -> do
@@ -90,11 +95,12 @@ fEx (TLRecord f) vid = do
   Record . M.fromList . zip (map fst f) <$> zipWithM (pack fEx) (map snd f) (map Atom vids)
 fEx (TLSum m) vid = do
   s <- lift $ FS.server
-  vn <- either (error "TODO (uojdqlamk") id <$> liftIO (S.cmdVariant s (toVar vid))
+  void $ liftIO $ S.cmdType s $ toVar vid
+  vn <- either (error . ("TODO (uojdqlamk) "++) . show) id <$> liftIO (S.cmdVariant s (toVar vid))
   let ts = fromJust $ M.lookup vn m
   vids <- forM ts $ const $ lift $ FS.getValueID
+  void $ liftIO $ S.cmdDestruct s (toVar vid) $ map toVar vids
   Sum vn <$> zipWithM (pack fEx) ts (map Atom vids)
-fEx _ vid = pure $ Atom $ Left vid
 
 packAll :: Monad m => (TypeLayout -> a -> PackerT v m (Value b)) -> [(ExTypeID, Value a)] -> PackerT v m [Value b]
 packAll f vs = forM vs $ uncurry $ pack f
@@ -125,6 +131,11 @@ load (s, i) ps vs = do
     load' :: [ExValueID] -> (ExTypeID, TypeLayout, Value (Either ExValueID Int)) -> FutharkServerM ExValueID
     load' _ (_, _, Atom (Left vid)) = pure vid
     load' vids (_, _, Atom (Right idx)) = pure $ vids !! idx
+    load' vids (tid, TLArray t, Array a) = do
+      values <- mapM (load' vids . (t, look t,)) $ ND.elems a
+      o <- FS.getValueID
+      void $ liftIO $ S.cmdNewArray s (toVar o) (fromJust $ BM.lookupLeft tid $ siType i) (ND.shape a) $ map toVar values
+      pure o
     load' vids (tid, TLRecord r, Record m) = do
       k <- forM r $ load' vids . \(n, t) -> (t, look t, fromJust $ M.lookup n m)
       o <- FS.getValueID
@@ -172,6 +183,7 @@ unload i vs k = do
     unload' :: [PrimitiveValue] -> (ExTypeID, TypeLayout, Value (Either ExValueID Int)) -> ExValue
     unload' pvs (_, TLPrimitive _, Atom (Right idx)) = Atom $ Right $ pvs !! idx
     unload' _ (_, TLOpaque, Atom (Left vid)) = Atom $ Left vid
+    unload' pvs (_, TLArray t, Array nd) = Array $ fmap (unload' pvs . (t, look t,)) nd
     unload' pvs (_, TLRecord f, Record m) =
       Record $ M.fromList $ zip (map fst f) $ map (\(n, t) -> unload' pvs (t, look t, fromJust $ M.lookup n m)) f
     unload' pvs (_, TLSum m, Sum vn vvs) =

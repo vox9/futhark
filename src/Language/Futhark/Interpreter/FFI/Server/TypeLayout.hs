@@ -11,7 +11,7 @@ import Prelude hiding (init)
 
 data TypeLayout
   = TLPrimitive PrimitiveType
-  | TLArray Int ExTypeID
+  | TLArray ExTypeID
   | TLRecord [(S.FieldName, ExTypeID)]
   | TLSum (M.Map S.VariantName [ExTypeID])
   | TLOpaque

@@ -1238,10 +1238,10 @@ evalModExp env (ModApply f e (Info psubst) (Info rsubst) _) = do
       pure (f_env <> e_env <> res_env <> env_substs, res_mod)
     _ -> error "Expected ModuleFun."
 
-extFun :: VName -> Int -> [Value] -> Value
-extFun _ i _  | i  < 1 = error "TODO (09itpwokl)" -- TODO: There can be "entrypoint" values!
-extFun n i vs | i == 1 = ValueFun $ \v -> liftF $ ExtOpCall n (reverse $ v : vs) id
-extFun n i vs = ValueFun $ \v -> pure $ extFun n (i - 1) (v : vs)
+extFun :: VName -> Int -> [Value] -> EvalM Value
+extFun n i _  | i  < 1 = liftF $ ExtOpCall n [] id -- Special case: Functions with 0 parameters - i.e. values
+extFun n i vs | i == 1 = pure . ValueFun $ \v -> liftF $ ExtOpCall n (reverse $ v : vs) id
+extFun n i vs = pure . ValueFun $ \v -> extFun n (i - 1) (v : vs)
 
 evalDec :: Env -> Dec -> EvalM Env
 evalDec env (ValDec (ValBind (Just _) (VName vn vi) _ (Info ret) tparams ps fbody _ _ _)) | "$" `T.isPrefixOf` nameToText vn = localExts $ do
@@ -1250,15 +1250,25 @@ evalDec env (ValDec (ValBind (Just _) (VName vn vi) _ (Info ret) tparams ps fbod
   case binding of
     (TermValue (Just t) _) -> do
       sizes <- extEnv
-      pure $ mempty {envTerm = M.singleton n $ TermValue (Just t) $ extFun n (length ps) []} <> sizes
-    _ -> error "Impossible (u839rwoifjs)" -- TODO
+      f <- extFun n (length ps) []
+      pure $ mempty {envTerm = M.singleton n $ TermValue (Just t) f} <> sizes
+    (TermPoly (Just t) _) -> do
+      sizes <- extEnv
+      f <- extFun n (length ps) []
+      pure $ mempty {envTerm = M.singleton n $ TermValue (Just t) f} <> sizes
+    _ -> error "TODO: Impossible? (e2huqidjnk)"
 evalDec env (ValDec (ValBind (Just (Info _)) n _ (Info ret) tparams ps h@(Hole _ _) _ _ _)) = localExts $ do
   binding <- evalValBinding env tparams ps ret h
   case binding of
     (TermValue (Just t) _) -> do
       sizes <- extEnv
-      pure $ mempty {envTerm = M.singleton n $ TermValue (Just t) $ extFun n (length ps) []} <> sizes
-    _ -> error "Impossible (u839rwoifjs)" -- TODO
+      f <- extFun n (length ps) []
+      pure $ mempty {envTerm = M.singleton n $ TermValue (Just t) f} <> sizes
+    (TermPoly (Just t) _) -> do
+      sizes <- extEnv
+      f <- extFun n (length ps) []
+      pure $ mempty {envTerm = M.singleton n $ TermValue (Just t) f} <> sizes
+    _ -> error "TODO: Impossible? (98quwdoijla)"
 evalDec env (ValDec (ValBind _ v _ (Info ret) tparams ps fbody _ _ _)) = localExts $ do
   binding <- evalValBinding env tparams ps ret fbody
   sizes <- extEnv

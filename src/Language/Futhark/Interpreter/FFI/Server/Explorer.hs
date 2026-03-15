@@ -76,10 +76,9 @@ exploreType s n = do
         "bool" -> TBool
         _ -> error "TODO (89urijqowdklmacs)"
     handleArray = do
-      r <- liftIO $ S.cmdRank s n
       e <- liftIO $ S.cmdElemtype s n
-      case (r, e) of
-        (Right r', Right e') -> TLArray r' <$> exploreType s e' >>= putType n
+      case e of
+        Right e' -> TLArray <$> exploreType s e' >>= putType n
         _ -> error "TODO (u890wqfioajscklm)"
     handleRecord = do
       fs <- liftIO $ S.cmdFields s n

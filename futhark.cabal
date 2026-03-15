@@ -399,10 +399,11 @@ library
       Futhark.Util
       Futhark.Util.BiMap
       Futhark.Util.CMath
-      Futhark.Util.IntegralExp
       Futhark.Util.Html
+      Futhark.Util.IntegralExp
       Futhark.Util.Loc
       Futhark.Util.Log
+      Futhark.Util.NDArray
       Futhark.Util.Options
       Futhark.Util.Pretty
       Futhark.Util.ProgressBar

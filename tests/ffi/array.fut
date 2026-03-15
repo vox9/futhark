@@ -1,7 +1,7 @@
 -- ==
 -- externals { array.ext }
 
-extern foreign (x: []i32) (y: []i32): []i32
+extern foreign (x: [3]i32) (y: [3]i32): [3]i32
 
 -- ==
 -- entry: main

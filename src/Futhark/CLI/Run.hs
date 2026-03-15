@@ -46,7 +46,7 @@ interpret config fp = do
   let call' n p = forM servers $ \s -> do
         --let (S.Interface i) = S.getInterface s
         let p' = map S.fromInterpreterValue p
-        Left $ S.toInterpreterValue <$> S.runFutharkServerM (SP.call (nameToText n) p') s
+        Left $ S.toInterpreterValue . fst <$> S.runFutharkServerM (SP.call (nameToText n) p') s
         --if M.member n i then Left $ S.toInterpreterValue <$> S.call s n p'
         --else Right ()
   
@@ -54,7 +54,7 @@ interpret config fp = do
         Left v -> v
         Right _ -> error "TODO (r29y7q8uwfih)"
 
-  let realize' vid = forM servers $ \s -> Left $ S.toInterpreterValue <$> S.runFutharkServerM (SP.realize vid) s
+  let realize' vid = forM servers $ \s -> Left $ S.toInterpreterValue . fst <$> S.runFutharkServerM (SP.realize vid) s
   
   let realize vid = case realize' vid of
         Left v -> v

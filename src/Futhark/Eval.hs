@@ -16,7 +16,8 @@ import Control.Monad.Free.Church (F, runF)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Reader (ReaderT (runReaderT), ask)
-import Data.IORef (IORef, modifyIORef')
+import Data.Bifunctor (first)
+import Data.IORef (IORef, modifyIORef', readIORef, writeIORef, newIORef)
 import Data.Map qualified as M
 import Data.Maybe (maybeToList)
 import Data.Sequence (Seq, (|>))
@@ -86,6 +87,23 @@ runEvalRecordRef msgRef (EvalRecordRef action) =
 
 newtype InterpreterState = InterpreterState (VNameSource, T.Env, I.Ctx, Maybe FutharkServer)
 
+-- TODO: Should NOT be IORef. This is temporary, for testing
+call :: IORef (Maybe FutharkServer) -> VName -> [I.Value] -> IO I.Value
+call s (VName n _) p = do
+  let p' = map S.fromInterpreterValue p
+  (Just s') <- readIORef s
+  (r, s'') <- first S.toInterpreterValue <$> S.runFutharkServerM (SP.call (nameToText n) p') s'
+  writeIORef s $ Just s''
+  pure r
+
+-- TODO: Should NOT be IORef. This is temporary, for testing
+realize :: IORef (Maybe FutharkServer) -> S.ExValueID -> IO I.Value
+realize s vid = do
+  (Just s') <- readIORef s
+  (r, s'') <- first S.toInterpreterValue <$> S.runFutharkServerM (SP.realize vid) s'
+  writeIORef s $ Just s''
+  pure r
+
 -- | Run an expression in the given interpreter state. The expression is parsed,
 -- type checked, and then run. Returns a prettyprinted result. Must be run in a
 -- monad that supports aborting and traces.
@@ -109,15 +127,8 @@ runExpr (InterpreterState (src, env, ctx, s)) str = do
             "The following types are ambiguous: "
               <> commasep (map (pretty . nameToText . toName . typeParamName) tparams)
           ]
-  let call (VName n _) p = case s of
-        Just s' -> do
-          let p' = map S.fromInterpreterValue p
-          S.toInterpreterValue <$> S.runFutharkServerM (SP.call (nameToText n) p') s'
-        Nothing -> error "TODO (uqr8wijoa)" -- No server
-  let realize vid = case s of
-        Just s' -> S.toInterpreterValue <$> S.runFutharkServerM (SP.realize vid) s'
-        Nothing -> error "TODO (uqr8wijoa)" -- No server
-  pval <- runInterpreterNoBreak call realize $ I.interpretExp ctx fexp
+  is <- liftIO $ newIORef s
+  pval <- runInterpreterNoBreak call realize is $ I.interpretExp ctx fexp
   case pval of
     Left err -> do
       abort $ I.prettyInterpreterError err
@@ -164,15 +175,15 @@ newFutharkiState cfg maybe_file vfs = runExceptT $ do
           in (modifyLast (second $ const m') imports,) . Just <$> S.startServer (take (length file - 4) file)
         Nothing -> pure (imports, Nothing)
 
+  is <- liftIO $ newIORef s
   ictx <-
     let foldFile ctx =
           badOnLeft I.prettyInterpreterError
-            <=< runInterpreterNoBreak
-                  (const $ const $ error "TODO: Not needed? (12e8uwqd)")
-                  (const $ error "TODO: Not needed? (21uoqdi)")
+            <=< runInterpreterNoBreak call realize is
               . I.interpretImport ctx
      in foldM foldFile I.initialCtx $
           map (fmap fileProg) imports'
+  s' <- liftIO $ readIORef is
 
   let (tenv, ienv) =
         let (iname, fm) = last imports'
@@ -180,7 +191,7 @@ newFutharkiState cfg maybe_file vfs = runExceptT $ do
               ictx {I.ctxEnv = I.ctxImports ictx M.! iname}
             )
 
-  pure $ InterpreterState (src, tenv, ienv, s)
+  pure $ InterpreterState (src, tenv, ienv, s')
   where
     badOnLeft :: (Monad m) => (err -> err') -> Either err a -> ExceptT err' m a
     badOnLeft _ (Right x) = pure x
@@ -188,11 +199,12 @@ newFutharkiState cfg maybe_file vfs = runExceptT $ do
 
 runInterpreterNoBreak ::
   (Evaluation m, MonadIO m) =>
-  (VName -> [I.Value] -> IO I.Value) -> 
-  (S.ExValueID -> IO I.Value) -> 
+  (IORef (Maybe FutharkServer) -> VName -> [I.Value] -> IO I.Value) ->
+  (IORef (Maybe FutharkServer) -> S.ExValueID -> IO I.Value) ->
+  IORef (Maybe FutharkServer) ->
   F I.ExtOp a ->
   m (Either I.InterpreterError a)
-runInterpreterNoBreak call realize m = runF m (pure . Right) intOp
+runInterpreterNoBreak call' realize' s m = runF m (pure . Right) intOp
   where
     intOp (I.ExtOpError err) = pure $ Left err
     intOp (I.ExtOpTrace w v c) = do
@@ -200,8 +212,8 @@ runInterpreterNoBreak call realize m = runF m (pure . Right) intOp
       c
     intOp (I.ExtOpBreak _ _ _ c) = c
     intOp (I.ExtOpCall n p c) = do
-      r <- liftIO $ call n p
+      r <- liftIO $ call' s n p
       c r
     intOp (I.ExtOpRealize vid c) = do
-      r <- liftIO $ realize vid
+      r <- liftIO $ realize' s vid
       c r

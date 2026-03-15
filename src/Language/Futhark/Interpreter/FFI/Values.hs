@@ -14,11 +14,11 @@ module Language.Futhark.Interpreter.FFI.Values
   )
 where
 
-import Data.Array qualified as A
 import Data.Map qualified as M
 import Data.Text qualified as T
 import Language.Futhark.Core (Int8, Int16, Int32, Int64, Word8, Word16, Word32, Word64, Half)
 import Language.Futhark.Syntax qualified as I
+import Futhark.Util.NDArray (NDArray)
 
 data PrimitiveType
   = TInt8
@@ -52,14 +52,14 @@ data PrimitiveValue
 
 data Type a
   = TAtom a
-  | TArray Int (Type a)
+  | TArray (Type a)
   | TRecord (M.Map T.Text (Type a))
   | TSum (M.Map T.Text [Type a])
-  deriving (Show, Eq, Ord)
+  deriving (Show, Eq, Ord, Functor)
 
 data Value a
   = Atom a
-  | Array (A.Array Int (Value a))
+  | Array (NDArray (Value a))
   | Record (M.Map T.Text (Value a))
   | Sum T.Text [Value a]
   deriving (Show, Eq, Ord, Functor)
