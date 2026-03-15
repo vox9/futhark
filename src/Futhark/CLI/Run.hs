@@ -25,7 +25,7 @@ import System.Exit
 import System.FilePath
 import System.IO
 import Prelude
-import Language.Futhark.Interpreter.FFI.ExID (ExValueID)
+import Language.Futhark.Interpreter.FFI.Values (Location (Location), Value (Atom))
 
 -- | Run @futhark run@.
 main :: String -> [String] -> IO ()
@@ -33,6 +33,10 @@ main = mainWithOptions interpreterConfig options "options... <program.fut>" run
   where
     run [prog] config = Just $ interpret config prog
     run _ _ = Nothing
+
+realize' l = do
+  r <- SP.realize l
+  pure $ Atom $ Left $ Location r []
 
 interpret :: InterpreterConfig -> FilePath -> IO ()
 interpret config fp = do
@@ -54,7 +58,7 @@ interpret config fp = do
         Left v -> v
         Right _ -> error "TODO (r29y7q8uwfih)"
 
-  let realize' vid = forM servers $ \s -> Left $ S.toInterpreterValue . fst <$> S.runFutharkServerM (SP.realize vid) s
+  let realize' l = undefined --forM servers $ \s -> Left $ S.toInterpreterValue . fst <$> S.runFutharkServerM (realize' l) s
   
   let realize vid = case realize' vid of
         Left v -> v
@@ -173,7 +177,7 @@ newFutharkiState cfg file = runExceptT $ do
     badOnLeft _ (Right x) = pure x
     badOnLeft p (Left err) = throwError $ p err
 
-runInterpreter' :: (MonadIO m) => (VName -> [I.Value] -> IO I.Value) -> (ExValueID -> IO I.Value) -> F I.ExtOp a -> m (Either I.InterpreterError a)
+runInterpreter' :: (MonadIO m) => (VName -> [I.Value] -> IO I.Value) -> (Location -> IO I.Value) -> F I.ExtOp a -> m (Either I.InterpreterError a)
 runInterpreter' call realize m = runF m (pure . Right) intOp
   where
     intOp (I.ExtOpError err) = pure $ Left err
@@ -184,8 +188,8 @@ runInterpreter' call realize m = runF m (pure . Right) intOp
     intOp (I.ExtOpCall n p c) = do
       r <- liftIO $ call n p
       c r
-    intOp (I.ExtOpRealize vid c) = do
-      r <- liftIO $ realize vid
+    intOp (I.ExtOpRealize l c) = do
+      r <- liftIO $ realize l
       c r
 
 --callV :: Name -> [I.Value] -> IO (Either I.InterpreterError I.Value)

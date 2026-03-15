@@ -18,7 +18,7 @@ import Data.Array qualified as A
 import Data.Map qualified as M
 import Futhark.Util.NDArray qualified as ND
 import Language.Futhark.Core (Name, nameToText, nameFromText)
-import Language.Futhark.Interpreter.FFI.ExID
+import Language.Futhark.Interpreter.FFI.UIDs
 import Language.Futhark.Interpreter.FFI.Values
 import Language.Futhark.Interpreter.Values qualified as I
 import Language.Futhark.Interpreter.Values qualified as S
@@ -34,8 +34,8 @@ newtype Interface a
 type InFunction = Function PrimitiveType
 type InInterface = Interface PrimitiveType
 
-type ExTypeAtom = Either ExTypeID PrimitiveType
-type ExValueAtom = Either ExValueID PrimitiveValue
+type ExTypeAtom = Either TypeUID PrimitiveType
+type ExValueAtom = Either Location PrimitiveValue
 
 type ExType = Type ExTypeAtom
 type ExValue = Value ExValueAtom
@@ -56,7 +56,7 @@ fromInterpreterValue iv@(I.ValueArray _ _) = Array $ fmap fromInterpreterValue $
     dims _ = []
 fromInterpreterValue (I.ValueRecord m) = Record $ M.map fromInterpreterValue $ M.mapKeys nameToText m
 fromInterpreterValue (I.ValueSum _ n v) = Sum (nameToText n) $ map fromInterpreterValue v
-fromInterpreterValue (I.ValueExt vid) = Atom $ Left vid
+fromInterpreterValue (I.ValueExt l _) = Atom $ Left l
 fromInterpreterValue _ = error "TODO (qu9wdaoijlm)"
 
 toInterpreterValue :: ExValue -> I.Value m
@@ -73,4 +73,4 @@ toInterpreterValue (Array nd) = unflatten []
 toInterpreterValue (Record m) = I.ValueRecord $ M.map toInterpreterValue $ M.mapKeys nameFromText m
 -- TODO: Add shape
 toInterpreterValue (Sum n v) = I.ValueSum (I.ShapeSum M.empty) (nameFromText n) $ map toInterpreterValue v
-toInterpreterValue (Atom (Left vid)) = I.ValueExt vid
+toInterpreterValue (Atom (Left vid)) = I.ValueExt vid Nothing

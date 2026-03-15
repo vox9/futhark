@@ -5,39 +5,39 @@ where
 
 import Control.Monad (forM)
 import Control.Monad.State (MonadIO (liftIO), StateT (runStateT), modify, gets, MonadState)
-import Futhark.Util.BiMap qualified as BM
 import Data.Map qualified as M
 import Futhark.Server qualified as S
-import Language.Futhark.Interpreter.FFI.ExID
-import Language.Futhark.Interpreter.FFI.Values (PrimitiveType (..))
+import Futhark.Util.BiMap qualified as BM
 import Language.Futhark.Interpreter.FFI.Server.Interface (Entry (..), ServerInterface (..))
 import Language.Futhark.Interpreter.FFI.Server.TypeLayout (TypeLayout (..))
+import Language.Futhark.Interpreter.FFI.UIDs
+import Language.Futhark.Interpreter.FFI.Values (PrimitiveType (..))
 
 -- The explorer monad
-newtype ServerExplorer a = ServerExplorer (ExIDSrcT (StateT ServerInterface IO) a)
+newtype ServerExplorer a = ServerExplorer (UIDSourceT (StateT ServerInterface IO) a)
   deriving (Functor, Applicative, Monad, MonadIO, MonadState ServerInterface)
 
-runServerExplorer :: ServerExplorer a -> ExIDSrc -> IO (ServerInterface, ExIDSrc)
+runServerExplorer :: ServerExplorer a -> UIDSource -> IO (ServerInterface, UIDSource)
 runServerExplorer (ServerExplorer m) s = do
-  ((_, s'), o) <- runStateT (runExIDSrcT m s) mempty
+  ((_, s'), o) <- runStateT (runUIDSourceT m s) mempty
   pure (o, s')
 
 -- Utility functions
-lookupTypeName :: S.TypeName -> ServerExplorer (Maybe ExTypeID)
+lookupTypeName :: S.TypeName -> ServerExplorer (Maybe TypeUID)
 lookupTypeName n = ServerExplorer $ gets $ BM.lookupRight n . siType
 
-putEntryPoint :: S.EntryName -> [ExTypeID] -> [ExTypeID] -> ServerExplorer ExEntryID
+putEntryPoint :: S.EntryName -> [TypeUID] -> [TypeUID] -> ServerExplorer EntryUID
 putEntryPoint n i o = ServerExplorer $ do
-  eid <- getEntryID
+  eid <- getUID
   modify (\s -> s
     { siEntryPoint = BM.insert n eid $ siEntryPoint s,
       siEntryPointInfo = M.insert eid (Entry i o) $ siEntryPointInfo s
     })
   pure eid
 
-putType :: S.TypeName -> TypeLayout -> ServerExplorer ExTypeID
+putType :: S.TypeName -> TypeLayout -> ServerExplorer TypeUID
 putType n l = ServerExplorer $ do
-  tid <- getTypeID
+  tid <- getUID
   modify (\s -> s
     { siType = BM.insert n tid $ siType s,
       siTypeLayout = M.insert tid l $ siTypeLayout s
@@ -45,7 +45,7 @@ putType n l = ServerExplorer $ do
   pure tid
 
 -- Exploration logic
-exploreType :: S.Server -> S.TypeName -> ServerExplorer ExTypeID
+exploreType :: S.Server -> S.TypeName -> ServerExplorer TypeUID
 exploreType s n = do
   tid <- lookupTypeName n
   case tid of
@@ -94,7 +94,7 @@ exploreType s n = do
         Left _ -> error "TODO (r928quwfijoasckl)"
     handleOpaque = putType n TLOpaque
 
-exploreEntryPoint :: S.Server -> S.EntryName -> ServerExplorer ExEntryID
+exploreEntryPoint :: S.Server -> S.EntryName -> ServerExplorer EntryUID
 exploreEntryPoint s n = do
   is <- liftIO $ S.cmdInputs s n
   os <- liftIO $ S.cmdOutputs s n
@@ -106,7 +106,7 @@ exploreEntryPoint s n = do
     _ -> error "TODO (98urqoijwdlansc)"
 
 exploreProgram :: S.Server -> IO ServerInterface
-exploreProgram s = fst <$> runServerExplorer exploreProgram' initIDSrc
+exploreProgram s = fst <$> runServerExplorer exploreProgram' mempty
   where
     exploreProgram' = do
       es <- liftIO $ S.cmdEntryPoints s

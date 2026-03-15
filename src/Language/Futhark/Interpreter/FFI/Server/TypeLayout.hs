@@ -5,14 +5,14 @@ where
 
 import Data.Map qualified as M
 import Futhark.Server qualified as S
-import Language.Futhark.Interpreter.FFI.ExID
-import Language.Futhark.Interpreter.FFI.Values
+import Language.Futhark.Interpreter.FFI.UIDs (TypeUID)
+import Language.Futhark.Interpreter.FFI.Values (PrimitiveType, Type (..))
 import Prelude hiding (init)
 
 data TypeLayout
   = TLPrimitive PrimitiveType
-  | TLArray ExTypeID
-  | TLRecord [(S.FieldName, ExTypeID)]
-  | TLSum (M.Map S.VariantName [ExTypeID])
+  | TLArray TypeUID
+  | TLRecord [(S.FieldName, TypeUID)]
+  | TLSum (M.Map S.VariantName [TypeUID])
   | TLOpaque
   deriving (Show, Eq, Ord)

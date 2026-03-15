@@ -1,18 +1,17 @@
 module Language.Futhark.Interpreter.FFI.Server.Packer
   ( call,
-    realize,
-    realize'
+    --realize
   )
 where
 
 import Control.Arrow (Arrow (second))
-import Control.Monad (forM, zipWithM, forM_, void, zipWithM_)
+import Control.Monad (forM, zipWithM, forM_, void)
 import Control.Monad.Reader (ReaderT (runReaderT), MonadReader (ask), MonadIO (liftIO))
 import Control.Monad.State (modify, MonadTrans (lift), gets, StateT (runStateT))
 import Data.Binary qualified as B
 import Data.ByteString.Lazy qualified as BL
 import Data.Map qualified as M
-import Data.Maybe (fromJust, fromMaybe)
+import Data.Maybe (fromJust)
 import Data.Text qualified as T
 import Futhark.Server qualified as S
 import Futhark.Test.Values qualified as V
@@ -20,7 +19,7 @@ import Futhark.Util.NDArray qualified as ND
 import Futhark.Util.BiMap qualified as BM
 import GHC.IO.Handle (hClose)
 import Language.Futhark.Interpreter.FFI (ExValue, ExValueAtom)
-import Language.Futhark.Interpreter.FFI.UIDs
+import Language.Futhark.Interpreter.FFI.ExID
 import Language.Futhark.Interpreter.FFI.Server (FutharkServerM)
 import Language.Futhark.Interpreter.FFI.Server qualified as FS
 import Language.Futhark.Interpreter.FFI.Server.Interface (ServerInterface (..), Entry (Entry))
@@ -30,61 +29,6 @@ import Prelude hiding (init)
 import System.IO.Temp (withSystemTempFile)
 import Data.Functor.Identity (Identity (runIdentity))
 import Data.Binary.Get qualified as B
-
-varName :: ValueUID -> S.VarName
-varName v = "v" <> T.show (uid v)
-
-getType :: ValueUID -> FutharkServerM TypeUID
-getType v = do
-  s <- FS.server
-  t <- either (error "TODO (rqwy8dauisoj)") id <$> liftIO (S.cmdType s $ varName v)
-  si <- FS.interface
-  case BM.lookupRight t $ siType si of
-    Just tid -> pure tid
-    Nothing -> error "TODO (ru938wojisdlcmkzx)"
-
-realize' :: Location -> FutharkServerM ExValue
-realize' (Location vid ds) = do
-  o <- realize $ Location vid $ reverse ds
-  s <- FS.server
-  _ <- liftIO $ S.cmdType s (varName o)
-  t <- getType o
-  si <- FS.interface
-  (ovs, oids) <- runPackerT (pack fEx t $ Atom o) si
-  ovs''' <- mapM (sequence . fmap (pure . ooga2)) [ovs]
-  head <$> unload si oids (zip [t] ovs''')
-
--- | Fully unpacks a single primitive value
-realize :: Location -> FutharkServerM ValueUID
-realize (Location vid []) = pure vid
-realize (Location vid (d : ds)) = do
-  c <- FS.getChild vid d
-  cvid <- fromMaybe (unpack' d) $ pure <$> c
-  realize $ Location cvid ds
-  where
-    unpack' :: Direction -> FutharkServerM ValueUID
-    unpack' (Index is) = do
-      s <- FS.server
-      vid' <- FS.getValueUID
-      void $ liftIO $ S.cmdIndex s (varName vid') (varName vid) is
-      FS.putChild vid d vid'
-      pure vid'
-    unpack' (Field f) = do
-      s <- FS.server
-      vid' <- FS.getValueUID
-      void $ liftIO $ S.cmdProject s (varName vid') (varName vid) f
-      FS.putChild vid d vid'
-      pure vid'
-    unpack' (VariantValue v i) = do
-      s <- FS.server
-      t <- FS.typeLayoutOf vid
-      let ts = case t of
-            Just (TLSum m) -> m M.! v
-            _ -> error "TODO (98uroijwdl)"
-      vid's <- FS.getValueUIDs $ fromIntegral $ length ts
-      void $ liftIO $ S.cmdDestruct s v (map varName vid's)
-      zipWithM_ (\i' vid' -> FS.putChild vid (VariantValue v i') vid') [0..] vid's
-      pure $ vid's !! i
 
 newtype PackerT v m a = PackerT (ReaderT ServerInterface (StateT [v] m) a)
   deriving (Functor, Applicative, Monad, MonadIO)
@@ -108,7 +52,7 @@ addValue v = PackerT $ do
 interface :: Monad m => PackerT v m ServerInterface
 interface = PackerT $ ask
 
-pack :: Monad m => (TypeLayout -> a -> PackerT v m (Value b)) -> TypeUID -> Value a -> PackerT v m (Value b)
+pack :: Monad m => (TypeLayout -> a -> PackerT v m (Value b)) -> ExTypeID -> Value a -> PackerT v m (Value b)
 pack f tid v = do
   i <- interface
   case M.lookup tid $ siTypeLayout i of
@@ -118,11 +62,11 @@ pack f tid v = do
     pack' l (Atom a) = f l a
     pack' (TLArray t) (Array a) = Array . ND.fromList (ND.shape a) <$> mapM (pack f t) (ND.elems a)
     pack' (TLRecord fs) (Record m) = do
-      ms <- mapM (\(n, t) -> pack f t $ fromMaybe (error "TODO (r983uwiofhjklna,)") $ M.lookup n m) fs
+      ms <- mapM (\(n, t) -> pack f t $ fromJust $ M.lookup n m) fs
       let m' = M.fromList $ zip (map fst fs) ms
       pure $ Record m'
     pack' (TLSum m) (Sum svn svs) = do
-      let ts = fromMaybe (error "TODO (r893uqoijwdln)") $ M.lookup svn m
+      let ts = fromJust $ M.lookup svn m
       svs' <- zipWithM (pack f) ts svs
       pure $ Sum svn svs'
     pack' _ _ = error "TODO: (9r8uqowfijlas)"
@@ -132,42 +76,42 @@ fIn (TLPrimitive _) (Right p) = Atom . Right <$> addValue p
 fIn TLOpaque (Left l) = pure $ Atom $ Left l
 fIn _ _ = error "TODO (u8roqjiwlfa)"
 
-fEx :: TypeLayout -> ValueUID -> PackerT (ValueUID, PrimitiveType) FutharkServerM (Value (Either ValueUID Int))
+fEx :: TypeLayout -> Location -> PackerT (Location, PrimitiveType) FutharkServerM (Value (Either Location Int))
 fEx (TLPrimitive t) l = Atom . Right <$> addValue (l, t)
 fEx TLOpaque l = pure $ Atom $ Left l
-fEx (TLArray t) vid = pure $ Atom $ Left vid --do
-  --s <- lift $ FS.server
-  --shape <- either (error "TODO (98ueiwe)") id <$> liftIO (S.cmdShape s $ varName vid)
-  --ids <- mapM (const <$> lift $ FS.getValueUID) [1..foldl (*) 1 shape]
-  --let nd = ND.fromList shape ids
-  --ND.mapMWithIndex_ (\i v -> liftIO $ S.cmdIndex s (varName v) (varName vid) i) nd
-  --Array <$> mapM ((pack fEx t) . Atom) nd
+fEx (TLArray t) vid = do
+  s <- lift $ FS.server
+  shape <- either (error "TODO (98ueiwe)") id <$> liftIO (S.cmdShape s $ toVar vid)
+  ids <- mapM (const <$> lift $ FS.getValueID) [1..foldl (*) 1 shape]
+  let nd = ND.fromList shape ids
+  ND.mapMWithIndex_ (\i v -> liftIO $ S.cmdIndex s (toVar v) (toVar vid) i) nd
+  Array <$> mapM ((pack fEx t) . Atom) nd
 fEx (TLRecord f) vid = do
   s <- lift $ FS.server
   vids <- forM f $ \(n, _) -> do
-    fvid <- lift $ FS.getValueUID
-    void $ liftIO $ S.cmdProject s (varName fvid) (varName vid) n
+    fvid <- lift $ FS.getValueID
+    void $ liftIO $ S.cmdProject s (toVar fvid) (toVar vid) n
     pure fvid
   Record . M.fromList . zip (map fst f) <$> zipWithM (pack fEx) (map snd f) (map Atom vids)
 fEx (TLSum m) vid = do
   s <- lift $ FS.server
-  void $ liftIO $ S.cmdType s $ varName vid
-  vn <- either (error . ("TODO (uojdqlamk) "++) . show) id <$> liftIO (S.cmdVariant s (varName vid))
+  void $ liftIO $ S.cmdType s $ toVar vid
+  vn <- either (error . ("TODO (uojdqlamk) "++) . show) id <$> liftIO (S.cmdVariant s (toVar vid))
   let ts = fromJust $ M.lookup vn m
-  vids <- forM ts $ const $ lift $ FS.getValueUID
-  void $ liftIO $ S.cmdDestruct s (varName vid) $ map varName vids
+  vids <- forM ts $ const $ lift $ FS.getValueID
+  void $ liftIO $ S.cmdDestruct s (toVar vid) $ map toVar vids
   Sum vn <$> zipWithM (pack fEx) ts (map Atom vids)
 
-packAll :: Monad m => (TypeLayout -> a -> PackerT v m (Value b)) -> [(TypeUID, Value a)] -> PackerT v m [Value b]
+packAll :: Monad m => (TypeLayout -> a -> PackerT v m (Value b)) -> [(ExTypeID, Value a)] -> PackerT v m [Value b]
 packAll f vs = forM vs $ uncurry $ pack f
 
-load :: (S.Server, ServerInterface) -> [PrimitiveValue] -> [(TypeUID, Value (Either ValueUID Int))] -> FutharkServerM [ValueUID]
+load :: (S.Server, ServerInterface) -> [PrimitiveValue] -> [(ExTypeID, Value (Either ExValueID Int))] -> FutharkServerM [ExValueID]
 load (s, i) ps vs = do
-  vids <- forM [1..length ps] $ const FS.getValueUID
+  vids <- forM [1..length ps] $ const FS.getValueID
   liftIO $ withSystemTempFile "futhark-call-load" $ \tmpf tmpf_h -> do
     forM_ ps $ BL.hPutStr tmpf_h . encodePrimitive
     hClose tmpf_h
-    void $ S.cmdRestore s tmpf $ zip (map varName vids) (map (T.pack . primitiveTypeName . primitiveType) ps)
+    void $ S.cmdRestore s tmpf $ zip (map toVar vids) (map (T.pack . primitiveTypeName . primitiveType) ps)
   forM (map (\(tid, v) -> (tid, look tid, v)) vs) (load' vids)
   where
     encodePrimitive :: PrimitiveValue -> BL.ByteString
@@ -184,35 +128,35 @@ load (s, i) ps vs = do
     encodePrimitive (Float64 v) = B.encode $ fromJust $ V.putValue v
     encodePrimitive (Bool    v) = B.encode $ fromJust $ V.putValue v
 
-    load' :: [ValueUID] -> (TypeUID, TypeLayout, Value (Either ValueUID Int)) -> FutharkServerM ValueUID
+    load' :: [ExValueID] -> (ExTypeID, TypeLayout, Value (Either ExValueID Int)) -> FutharkServerM ExValueID
     load' _ (_, _, Atom (Left vid)) = pure vid
     load' vids (_, _, Atom (Right idx)) = pure $ vids !! idx
     load' vids (tid, TLArray t, Array a) = do
       values <- mapM (load' vids . (t, look t,)) $ ND.elems a
-      o <- FS.getValueUID
-      void $ liftIO $ S.cmdNewArray s (varName o) (fromJust $ BM.lookupLeft tid $ siType i) (ND.shape a) $ map varName values
+      o <- FS.getValueID
+      void $ liftIO $ S.cmdNewArray s (toVar o) (fromJust $ BM.lookupLeft tid $ siType i) (ND.shape a) $ map toVar values
       pure o
     load' vids (tid, TLRecord r, Record m) = do
       k <- forM r $ load' vids . \(n, t) -> (t, look t, fromJust $ M.lookup n m)
-      o <- FS.getValueUID
-      void $ liftIO $ S.cmdNew s (varName o) (fromJust $ BM.lookupLeft tid $ siType i) $ map varName k
+      o <- FS.getValueID
+      void $ liftIO $ S.cmdNew s (toVar o) (fromJust $ BM.lookupLeft tid $ siType i) $ map toVar k
       pure o
     load' vids (tid, TLSum m, Sum vn vvs) = do
       k <- forM (zip (fromJust $ M.lookup vn m) vvs) $ load' vids . \(t, v) -> (t, look t, v)
-      o <- FS.getValueUID
-      void $ liftIO $ S.cmdConstruct s (varName o) (fromJust $ BM.lookupLeft tid $ siType i) vn $ map varName k
+      o <- FS.getValueID
+      void $ liftIO $ S.cmdConstruct s (toVar o) (fromJust $ BM.lookupLeft tid $ siType i) vn $ map toVar k
       pure o
     load' _ _ = error "TODO (y8euiqdhjkanx)"
 
-    look :: TypeUID -> TypeLayout
+    look :: ExTypeID -> TypeLayout
     look tid = fromJust $ M.lookup tid $ siTypeLayout i
 
-unload :: ServerInterface -> [(ValueUID, PrimitiveType)] -> [(TypeUID, Value (Either Location Int))] -> FutharkServerM [ExValue]
+unload :: ServerInterface -> [(ExValueID, PrimitiveType)] -> [(ExTypeID, Value (Either Location Int))] -> FutharkServerM [ExValue]
 unload i vs k = do
   s <- FS.server
   liftIO $ withSystemTempFile "futhark-call-unload" $ \tmpf tmpf_h -> do
     hClose tmpf_h
-    void $ S.cmdStore s tmpf $ map (varName . fst) vs
+    void $ S.cmdStore s tmpf $ map (toVar . fst) vs
     bs <- BL.readFile tmpf
     let vs' = case B.runGetOrFail (mapM (getPrimitive . snd) vs) bs of
           Left v -> error $ "TODO (u89riqojkms) " ++ show v
@@ -233,12 +177,12 @@ unload i vs k = do
     getPrimitive TFloat64 = Float64 . fromJust . V.getValue <$> B.get
     getPrimitive TBool    = Bool    . fromJust . V.getValue <$> B.get
 
-    look :: TypeUID -> TypeLayout
+    look :: ExTypeID -> TypeLayout
     look tid = fromJust $ M.lookup tid $ siTypeLayout i
 
-    unload' :: [PrimitiveValue] -> (TypeUID, TypeLayout, Value (Either Location Int)) -> ExValue
+    unload' :: [PrimitiveValue] -> (ExTypeID, TypeLayout, Value (Either Location Int)) -> ExValue
     unload' pvs (_, TLPrimitive _, Atom (Right idx)) = Atom $ Right $ pvs !! idx
-    unload' _ (_, _, Atom (Left vid)) = Atom $ Left vid
+    unload' _ (_, TLOpaque, Atom (Left vid)) = Atom $ Left vid
     unload' pvs (_, TLArray t, Array nd) = Array $ fmap (unload' pvs . (t, look t,)) nd
     unload' pvs (_, TLRecord f, Record m) =
       Record $ M.fromList $ zip (map fst f) $ map (\(n, t) -> unload' pvs (t, look t, fromJust $ M.lookup n m)) f
@@ -246,13 +190,8 @@ unload i vs k = do
       Sum vn $ zipWith (\t v -> unload' pvs (t, look t, v)) (fromJust $ M.lookup vn m) vvs
     unload' _ _ = error "TODO (u8rqowijdalkcm)"
 
-ooga :: Either Location Int -> FutharkServerM (Either ValueUID Int)
-ooga (Left l) = Left <$> realize l
-ooga (Right i) = pure $ Right i
-
-ooga2 :: Either ValueUID Int -> Either Location Int
-ooga2 (Left l) = Left $ Location l []
-ooga2 (Right i) = Right i
+toVar :: ExValueID -> S.VarName
+toVar v = "v" <> T.show (exValueID v)
 
 call :: S.EntryName -> [ExValue] -> FutharkServerM ExValue
 call n vs = do
@@ -264,18 +203,16 @@ call n vs = do
 
   -- Send inputs
   let (ivs, ps) = runPackerM (packAll fIn $ zip i vs) si
-  ivs''' <- mapM (sequence . fmap ooga) ivs
-  ivs' <- load (s, si) ps $ zip i ivs'''
+  ivs' <- load (s, si) ps $ zip i ivs
 
   -- Call
-  o' <- forM [1..length o] $ const FS.getValueUID
-  let o'' = map varName o'
-  void $ liftIO $ S.cmdCall s n o'' $ map varName ivs'
+  o' <- forM [1..length o] $ const FS.getValueID
+  let o'' = map toVar o'
+  void $ liftIO $ S.cmdCall s n o'' $ map toVar ivs'
 
   -- Get outputs
   (ovs, oids) <- runPackerT (packAll fEx $ zip o $ map Atom o') si
-  ovs''' <- mapM (sequence . fmap (pure . ooga2)) ovs
-  tuple' <$> unload si oids (zip o ovs''')
+  tuple' <$> unload si oids (zip o ovs)
   where
     getEntryPointID n' = do
       si <- FS.interface

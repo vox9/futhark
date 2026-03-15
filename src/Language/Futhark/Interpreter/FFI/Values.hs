@@ -3,6 +3,8 @@ module Language.Futhark.Interpreter.FFI.Values
     PrimitiveValue (..),
     Type (..),
     Value (..),
+    Direction (..),
+    Location (..),
     InType,
     InValue,
     primitiveType,
@@ -10,15 +12,18 @@ module Language.Futhark.Interpreter.FFI.Values
     toTuple,
     toTupleType,
     toPrimValue,
-    fromPrimValue
+    fromPrimValue,
+    indexLocation,
+    projectLocation
   )
 where
 
 import Data.Map qualified as M
 import Data.Text qualified as T
-import Language.Futhark.Core (Int8, Int16, Int32, Int64, Word8, Word16, Word32, Word64, Half)
-import Language.Futhark.Syntax qualified as I
 import Futhark.Util.NDArray (NDArray)
+import Language.Futhark.Core (Int8, Int16, Int32, Int64, Word8, Word16, Word32, Word64, Half)
+import Language.Futhark.Interpreter.FFI.UIDs (ValueUID)
+import Language.Futhark.Syntax qualified as I
 
 data PrimitiveType
   = TInt8
@@ -55,14 +60,31 @@ data Type a
   | TArray (Type a)
   | TRecord (M.Map T.Text (Type a))
   | TSum (M.Map T.Text [Type a])
-  deriving (Show, Eq, Ord, Functor)
+  deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
 
 data Value a
   = Atom a
   | Array (NDArray (Value a))
   | Record (M.Map T.Text (Value a))
   | Sum T.Text [Value a]
-  deriving (Show, Eq, Ord, Functor)
+  deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
+
+data Direction
+  = Index [Int]
+  | Field T.Text
+  | VariantValue T.Text Int
+  deriving (Show, Eq, Ord)
+
+type Directions = [Direction]
+
+data Location = Location ValueUID Directions
+  deriving (Show, Eq, Ord)
+
+indexLocation :: [Int] -> Location -> Location
+indexLocation i (Location vid ds) = Location vid $ Index i : ds
+
+projectLocation :: T.Text -> Location -> Location
+projectLocation f (Location vid ds) = Location vid $ Field f : ds
 
 type InType = Type PrimitiveType
 type InValue = Value PrimitiveValue

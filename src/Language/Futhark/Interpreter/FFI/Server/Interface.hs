@@ -7,17 +7,17 @@ where
 import Data.Map qualified as M
 import Futhark.Server qualified as S
 import Futhark.Util.BiMap qualified as BM
-import Language.Futhark.Interpreter.FFI.ExID (ExEntryID, ExTypeID)
 import Language.Futhark.Interpreter.FFI.Server.TypeLayout (TypeLayout)
+import Language.Futhark.Interpreter.FFI.UIDs (EntryUID, TypeUID)
 
-data Entry = Entry [ExTypeID] [ExTypeID]
+data Entry = Entry [TypeUID] [TypeUID]
   deriving (Eq, Ord, Show)
 
 data ServerInterface = ServerInterface
-  { siEntryPoint :: BM.BiMap S.EntryName ExEntryID,
-    siEntryPointInfo :: M.Map ExEntryID Entry,
-    siType :: BM.BiMap S.TypeName ExTypeID,
-    siTypeLayout :: M.Map ExTypeID TypeLayout
+  { siEntryPoint :: BM.BiMap S.EntryName EntryUID,
+    siEntryPointInfo :: M.Map EntryUID Entry,
+    siType :: BM.BiMap S.TypeName TypeUID,
+    siTypeLayout :: M.Map TypeUID TypeLayout
   }
   deriving (Show)
 
