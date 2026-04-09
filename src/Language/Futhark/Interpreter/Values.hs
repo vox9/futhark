@@ -43,6 +43,7 @@ import Futhark.Util (chunk, mapAccumLM)
 import Futhark.Util.Pretty
 import Language.Futhark hiding (Shape, matchDims)
 import Language.Futhark.Interpreter.AD qualified as AD
+import Language.Futhark.Interpreter.FFI.Value qualified as FFI
 import Language.Futhark.Primitive qualified as P
 import Prelude hiding (break, mod)
 
@@ -113,6 +114,8 @@ data Value m
     ValueAcc ValueShape (Value m -> Value m -> m (Value m)) !(Array Int (Value m))
   | -- A primitive value with added information used in automatic differentiation
     ValueAD AD.Depth AD.ADVariable
+  | -- An external value
+    ValueExt (Maybe (Value m)) FFI.GenFFIValue
 
 instance Show (Value m) where
   show (ValuePrim v) = "ValuePrim " <> show v <> ""
@@ -122,6 +125,7 @@ instance Show (Value m) where
   show ValueFun {} = "ValueFun _"
   show ValueAcc {} = "ValueAcc _"
   show (ValueAD d v) = unwords ["ValueAD", show d, show v]
+  show (ValueExt v _) = unwords ["ValueExt", show v, "_"]
 
 instance Eq (Value m) where
   ValuePrim (SignedValue x) == ValuePrim (SignedValue y) =
@@ -154,6 +158,8 @@ prettyValueWith pprPrim = pprPrec 0
     pprPrec p (ValueSum _ n vs) =
       parensIf (p > (0 :: Int)) $ "#" <> sep (pretty n : map (pprPrec 1) vs)
     pprPrec _ (ValueAD _ v) = pprPrim $ putV $ AD.varPrimal v
+    pprPrec _ (ValueExt Nothing _) = "ex"
+    pprPrec p (ValueExt (Just v) _) = "ex" <> "(" <> pprPrec p v <> ")"
     pprElem v@ValueArray {} = pprPrec 0 v
     pprElem v = group $ pprPrec 0 v
 

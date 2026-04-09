@@ -111,6 +111,7 @@ import Data.List.NonEmpty qualified as NE
 import Data.Map.Strict qualified as M
 import Data.Monoid hiding (Sum)
 import Data.Ord
+import Data.String (IsString (..))
 import Data.Text qualified as T
 import Data.Traversable
 import Futhark.Util.Loc
@@ -220,6 +221,12 @@ data AttrInfo vn
   = AttrAtom (AttrAtom vn) SrcLoc
   | AttrComp Name [AttrInfo vn] SrcLoc
   deriving (Eq, Ord, Show)
+
+instance IsString (AttrAtom vn) where
+  fromString = AtomName . fromString
+
+instance IsString (AttrInfo vn) where
+  fromString s = AttrAtom (fromString s) mempty
 
 -- | The elaborated size of a dimension is just an expression.
 type Size = ExpBase Info VName
@@ -1104,6 +1111,8 @@ data ValBindBase f vn = ValBind
     -- may refer to abstract types that are no longer in scope.
     valBindEntryPoint :: Maybe (f EntryPoint),
     valBindName :: vn,
+    -- | Location of the name of this binding itself.
+    valBindNameLoc :: SrcLoc,
     valBindRetDecl :: Maybe (TypeExp (ExpBase f vn) vn),
     -- | If 'valBindParams' is null, then the 'retDims' are brought
     -- into scope at this point.
