@@ -43,6 +43,7 @@ import Futhark.Util (chunk, mapAccumLM)
 import Futhark.Util.Pretty
 import Language.Futhark hiding (Shape, matchDims)
 import Language.Futhark.Interpreter.AD qualified as AD
+import Language.Futhark.Interpreter.FFI.Generic (FFIValue)
 import Language.Futhark.Primitive qualified as P
 import Prelude hiding (break, mod)
 
@@ -113,15 +114,18 @@ data Value m
     ValueAcc ValueShape (Value m -> Value m -> m (Value m)) !(Array Int (Value m))
   | -- A primitive value with added information used in automatic differentiation
     ValueAD AD.Depth AD.ADVariable
+  | -- A value handled by an external system
+    ValueExt (FFIValue (Value m))
 
 instance Show (Value m) where
-  show (ValuePrim v) = "ValuePrim " <> show v <> ""
+  show (ValuePrim v) = "ValuePrim " <> show v
   show (ValueArray shape vs) = unwords ["ValueArray", "(" <> show shape <> ")", "(" <> show vs <> ")"]
   show (ValueRecord fs) = "ValueRecord " <> "(" <> show fs <> ")"
   show (ValueSum shape c vs) = unwords ["ValueSum", "(" <> show shape <> ")", show c, "(" <> show vs <> ")"]
   show ValueFun {} = "ValueFun _"
   show ValueAcc {} = "ValueAcc _"
   show (ValueAD d v) = unwords ["ValueAD", show d, show v]
+  show (ValueExt _) = unwords ["ValueExt _"]
 
 instance Eq (Value m) where
   ValuePrim (SignedValue x) == ValuePrim (SignedValue y) =
@@ -154,6 +158,7 @@ prettyValueWith pprPrim = pprPrec 0
     pprPrec p (ValueSum _ n vs) =
       parensIf (p > (0 :: Int)) $ "#" <> sep (pretty n : map (pprPrec 1) vs)
     pprPrec _ (ValueAD _ v) = pprPrim $ putV $ AD.varPrimal v
+    pprPrec _ (ValueExt _) = "#<ext>"
     pprElem v@ValueArray {} = pprPrec 0 v
     pprElem v = group $ pprPrec 0 v
 
@@ -205,8 +210,6 @@ arrayValueShape = outer . valueShape
     outer (ShapeDim d s) = ShapeDim d $ outer s
     outer _ = ShapeLeaf
 
--- TODO: Perhaps there is some clever way to reuse the code between
--- valueAccum and valueAccumLM
 valueAccum :: (a -> Value m -> (a, Value m)) -> a -> Value m -> (a, Value m)
 valueAccum f i = runIdentity . valueAccumLM f' i
   where

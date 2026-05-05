@@ -416,6 +416,16 @@ library
       Language.Futhark.Core
       Language.Futhark.Interpreter
       Language.Futhark.Interpreter.AD
+      Language.Futhark.Interpreter.FFI
+      Language.Futhark.Interpreter.FFI.FutharkServer.Explorer
+      Language.Futhark.Interpreter.FFI.FutharkServer.Server
+      Language.Futhark.Interpreter.FFI.FutharkServer.TypeLayout
+      Language.Futhark.Interpreter.FFI.FutharkServer.ValueHandle
+      Language.Futhark.Interpreter.FFI.Generic
+      Language.Futhark.Interpreter.FFI.UIDs
+      Language.Futhark.Interpreter.FFI.Util.AtomicList
+      Language.Futhark.Interpreter.FFI.Util.UID
+      Language.Futhark.Interpreter.FFI.Value
       Language.Futhark.Interpreter.Values
       Language.Futhark.FreeVars
       Language.Futhark.Parser

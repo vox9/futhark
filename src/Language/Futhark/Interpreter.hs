@@ -59,6 +59,7 @@ import Futhark.Util.Pretty hiding (apply)
 import Language.Futhark hiding (Shape, matchDims)
 import Language.Futhark qualified as F
 import Language.Futhark.Interpreter.AD qualified as AD
+import Language.Futhark.Interpreter.FFI.Generic qualified as FFI
 import Language.Futhark.Interpreter.Values hiding (Value)
 import Language.Futhark.Interpreter.Values qualified
 import Language.Futhark.Primitive (floatValue, intValue)
@@ -86,11 +87,17 @@ data ExtOp a
   = ExtOpTrace T.Text (Doc ()) a
   | ExtOpBreak Loc BreakReason (NE.NonEmpty StackFrame) a
   | ExtOpError InterpreterError
+  | ExtOpCall Name [Value] (Value -> a)
+  | ExtOpPush (FFI.FFIValue Value) (FFI.FFIValue Value -> a)
+  | ExtOpFetch (FFI.FFIValue Value) (Value -> a)
 
 instance Functor ExtOp where
   fmap f (ExtOpTrace w s x) = ExtOpTrace w s $ f x
   fmap f (ExtOpBreak w why backtrace x) = ExtOpBreak w why backtrace $ f x
   fmap _ (ExtOpError err) = ExtOpError err
+  fmap f (ExtOpCall n p c) = ExtOpCall n p $ f . c
+  fmap f (ExtOpPush e c) = ExtOpPush e $ f . c
+  fmap f (ExtOpFetch e c) = ExtOpFetch e $ f . c
 
 type Stack = [StackFrame]
 
@@ -134,6 +141,17 @@ stacktrace = asks $ map stackFrameLoc . fst
 -- of the stack as a proxy.
 adDepth :: EvalM AD.Depth
 adDepth = AD.Depth . length <$> stacktrace
+
+call :: Name -> [Value] -> EvalM Value
+call n vs = liftF $ ExtOpCall n vs id
+
+push :: Value -> EvalM Value
+push (ValueExt e) = ValueExt <$> liftF (ExtOpPush e id)
+push v = pure v
+ 
+fetch :: Value -> EvalM Value
+fetch (ValueExt e) = liftF $ ExtOpFetch e id
+fetch v = pure v
 
 lookupImport :: ImportName -> EvalM (Maybe Env)
 lookupImport f = asks $ M.lookup f . snd
@@ -467,6 +485,7 @@ fromArray v = error $ "Expected array value, but found: " <> show v
 project :: Name -> Value -> Value
 project f (ValueRecord fs)
   | Just v' <- M.lookup f fs = v'
+project f (ValueExt e) = ValueExt $ FFI.project f e
 project _ _ = error "Value does not have expected field."
 
 apply :: SrcLoc -> Env -> Value -> Value -> EvalM Value
@@ -597,6 +616,11 @@ indexArray (IndexingFix i : is) (ValueArray _ arr)
 indexArray (IndexingSlice start end stride : is) (ValueArray (ShapeDim _ rowshape) arr) = do
   js <- indexesFor start end stride $ arrayLength arr
   toArray' (indexShape is rowshape) <$> mapM (indexArray is . (arr !)) js
+indexArray is (ValueExt e) = Just $ ValueExt $ FFI.index (map fromIntegral $ convertIs is) e
+  where
+    convertIs (IndexingFix i : is') = i : convertIs is'
+    convertIs (IndexingSlice _ _ _ : _) = error $ "TODO (89r12quiowdjl)" -- Could realize / Could be lazy
+    convertIs [] = []
 indexArray _ v = Just v
 
 writeArray :: [Indexing] -> Value -> Value -> Maybe Value
@@ -1233,7 +1257,28 @@ evalModExp env (ModApply f e (Info psubst) (Info rsubst) _) = do
       pure (f_env <> e_env <> res_env <> env_substs, res_mod)
     _ -> error "Expected ModuleFun."
 
+extFun :: Name -> Int -> EvalM Value
+extFun n c = extFun' c []
+  where
+    extFun' :: Int -> [Value] -> EvalM Value
+    extFun' i _ | i < 1 = call n [] -- Special case: Functions with 0 parameters - i.e. values
+    extFun' i vs | i == 1 = pure . ValueFun $ \v -> call n $ reverse $ v : vs
+    extFun' i vs = pure . ValueFun $ \v -> extFun' (i - 1) $ v : vs
+
 evalDec :: Env -> Dec -> EvalM Env
+evalDec env (ValDec vb@(ValBind (Just _) vn@(VName n _) _ _ (Info ret) tparams ps fbody _ _ _))
+  | "$external" `elem` valBindAttrs vb = localExts $ do
+      binding <- evalValBinding env tparams ps ret fbody
+      case binding of
+        (TermValue (Just t) _) -> do
+          sizes <- extEnv
+          f <- extFun n (length ps)
+          pure $ mempty {envTerm = M.singleton vn $ TermValue (Just t) f} <> sizes
+        (TermPoly (Just t) _) -> do
+          sizes <- extEnv
+          f <- extFun n (length ps)
+          pure $ mempty {envTerm = M.singleton vn $ TermValue (Just t) f} <> sizes
+        _ -> error "TODO: Impossible? (e2huqidjnk)"
 evalDec env (ValDec (ValBind _ v _ _ (Info ret) tparams ps fbody _ _ _)) = localExts $ do
   binding <- evalValBinding env tparams ps ret fbody
   sizes <- extEnv
@@ -1590,7 +1635,9 @@ initialCtx =
 
     bopDef fs = fun2 $ \x y -> do
       i <- getCounter
-      case (x, y) of
+      x''' <- fetch x
+      y''' <- fetch y
+      case (x''', y''') of
         (ValuePrim x', ValuePrim y')
           | Just z <- msum $ map (`bopDef'` (x', y')) fs -> do
               breakOnNaN [x', y'] z
