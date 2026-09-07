@@ -5,7 +5,9 @@
 -- other commands that make use of the Futhark interpreter.
 module Futhark.Eval
   ( EvalConfig (..),
+    InterpreterState,
     runExpr,
+    runParsedExpr,
     evalConfig,
     evalServerOptions,
     runFFI,
@@ -13,8 +15,9 @@ module Futhark.Eval
     interpretImports,
     initialiseInterpreter,
     newInterpreterState,
+    newInterpreterStateWith,
     Evaluation (..),
-    EvalRecordRef (),
+    EvalRecordRef,
     runEvalRecordRef,
   )
 where
@@ -49,7 +52,7 @@ import Language.Futhark.Interpreter.FFI.ServerM qualified as FFI
 import Language.Futhark.Parser (parseExp)
 import Language.Futhark.Parser.Monad (SyntaxError (SyntaxError))
 import Language.Futhark.Pretty (toName)
-import Language.Futhark.Prop (typeOf)
+import Language.Futhark.Prop (UncheckedExp, typeOf)
 import Language.Futhark.Semantic qualified as T
 import Language.Futhark.Syntax (DecBase (ValDec), ProgBase (progDecs), ValBindBase (..), nameToText, typeParamName)
 import Language.Futhark.TypeChecker qualified as T
@@ -109,10 +112,19 @@ runExpr ::
   InterpreterState ->
   T.Text ->
   m (Doc AnsiStyle)
-runExpr (InterpreterState (src, env, ctx, s)) str = do
-  uexp <- case parseExp "" str of
+runExpr state str =
+  case parseExp "" str of
     Left (SyntaxError _ serr) -> abort $ pretty serr
-    Right e -> pure e
+    Right uexp -> runParsedExpr state uexp
+
+-- | As 'runExpr', but for an expression that has already been parsed -
+-- perhaps from somewhere other than a Futhark file.
+runParsedExpr ::
+  (Evaluation m, MonadIO m) =>
+  InterpreterState ->
+  UncheckedExp ->
+  m (Doc AnsiStyle)
+runParsedExpr (InterpreterState (src, env, ctx, s)) uexp = do
   fexp <- case T.checkExp [] src env uexp of
     (_, Left terr) -> do
       abort $ T.prettyTypeError terr
@@ -255,7 +267,26 @@ newInterpreterState ::
   EvalConfig ->
   VFS ->
   m (Either (Doc AnsiStyle) InterpreterState)
-newInterpreterState cfg vfs = runExceptT $ do
+newInterpreterState cfg vfs = newInterpreterStateOn cfg vfs Nothing
+
+-- | As 'newInterpreterState', but dispatch entry point calls to a server that
+-- is already running, instead of starting one. The server is never shut down by
+-- this function; that remains the responsibility of whoever started it.
+newInterpreterStateWith ::
+  (MonadIO m, Evaluation m) =>
+  EvalConfig ->
+  VFS ->
+  FFI.Server ->
+  m (Either (Doc AnsiStyle) InterpreterState)
+newInterpreterStateWith cfg vfs = newInterpreterStateOn cfg vfs . Just
+
+newInterpreterStateOn ::
+  (MonadIO m, Evaluation m) =>
+  EvalConfig ->
+  VFS ->
+  Maybe FFI.Server ->
+  m (Either (Doc AnsiStyle) InterpreterState)
+newInterpreterStateOn cfg vfs server = runExceptT $ do
   let maybe_file = evalFile cfg
   (ws, imports, src) <-
     badOnLeft prettyCompilerError
@@ -268,7 +299,7 @@ newInterpreterState cfg vfs = runExceptT $ do
     liftIO . hPutDoc stderr $
       prettyWarnings ws
 
-  (s, tenv, ienv) <- ExceptT $ initialiseInterpreter cfg maybe_file imports
+  (s, tenv, ienv) <- ExceptT $ initialiseInterpreter cfg maybe_file server imports
 
   pure $ InterpreterState (src, tenv, ienv, s)
 
@@ -287,32 +318,36 @@ interpretImports runner imports = do
   let (iname, fm) = last imports
   pure (fileScope fm, ictx {I.ctxEnv = I.ctxImports ictx M.! iname})
 
--- | Set up an interpreter context for the given program. If a backend has
--- been requested, a server is started and the entry points of the loaded
--- file are marked external, such that calls to them are dispatched to the
--- server instead of being interpreted. On failure the server is shut down
--- again, so a returned server is always one that the caller now owns (and
--- must eventually stop).
+-- | Set up an interpreter context for the given program. If a server is
+-- provided, or a backend has been requested (in which case a server is
+-- started), then the entry points of the loaded file are marked external, such
+-- that calls to them are dispatched to the server instead of being interpreted.
+-- On failure, a server started here is shut down again, so a returned server is
+-- always one that the caller now owns (and must eventually stop). A server
+-- passed in by the caller is never shut down here.
 initialiseInterpreter ::
   (Evaluation m, MonadIO m) =>
   EvalConfig ->
   Maybe FilePath ->
+  Maybe FFI.Server ->
   Imports ->
   m (Either (Doc AnsiStyle) (Maybe FFI.Server, T.Env, I.Ctx))
-initialiseInterpreter cfg maybe_file imports =
-  case (maybe_file, evalBackend cfg) of
-    (Just file, Just backend) -> do
+initialiseInterpreter cfg maybe_file server imports =
+  case (server, maybe_file, evalBackend cfg) of
+    (Just s, _, _) ->
+      evalWith (Just s) $ externaliseLast imports
+    (Nothing, Just file, Just backend) -> do
       started <- liftIO $ prepareServer cfg file backend
       case started of
         Left err -> pure $ Left $ pretty err
         Right s -> do
-          r <- interpretWith (Just s) $ externaliseLast imports
+          r <- evalWith (Just s) $ externaliseLast imports
           -- Do not leave a server running if we never got off the ground.
           when (isLeft r) $ void $ liftIO $ FFI.stopServer s
           pure r
-    _ -> interpretWith Nothing imports
+    _ -> evalWith Nothing imports
   where
-    interpretWith s =
+    evalWith s =
       runExceptT
         . fmap (\(tenv, ienv) -> (s, tenv, ienv))
         . interpretImports (runInterpreterNoBreak s)

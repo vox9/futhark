@@ -3,6 +3,7 @@ module Language.Futhark.Interpreter.FFI.ServerM
     ValueRef,
     Server,
     startServer,
+    newServer,
     stopServer,
     ServerM,
     runServerM,
@@ -111,7 +112,12 @@ askQueue :: ServerM (AL.AtomicList S.VarName)
 askQueue = ServerM $ asks queue
 
 startServer :: S.ServerCfg -> IO Server
-startServer cfg = Server <$> S.startServer cfg <*> AL.new
+startServer cfg = newServer =<< S.startServer cfg
+
+-- | Use an already-running server. Shutting it down remains the
+-- responsibility of whoever started it.
+newServer :: S.Server -> IO Server
+newServer s = Server s <$> AL.new
 
 -- | Shut down the server. Returns a message on termination failure.
 stopServer :: Server -> IO (Maybe T.Text)

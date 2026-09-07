@@ -177,7 +177,7 @@ newFutharkiState cfg count prev_prog maybe_file = runExceptT $ do
 
   -- Then into the interpreter.
   (server, tenv, ienv) <-
-    ExceptT $ initialiseInterpreter cfg maybe_file $ lpImports prog
+    ExceptT $ initialiseInterpreter cfg maybe_file Nothing $ lpImports prog
 
   pure
     FutharkiState
