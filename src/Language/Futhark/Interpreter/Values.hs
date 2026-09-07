@@ -94,21 +94,34 @@ typeShape t
   | otherwise =
       ShapeLeaf
 
--- | A fully evaluated Futhark value.
+-- | A Futhark value as produced and used by the interpreter. Some of these
+-- represent semantically meaningful Futhark values, while others represent
+-- internal operational things that should never be returned by an interpreter
+-- entry point, but can be observed in its intermediate stage (e.g. when using
+-- breakpoints to access the environment).
 data Value m
-  = ValuePrim !PrimValue
-  | ValueArray ValueShape !(Array Int (Value m))
-  | -- Stores the full shape.
+  = -- | A primitive value.
+    ValuePrim !PrimValue
+  | -- | An array, with explicit shape. The shape is the full shape of the
+    -- value, including element shape.
+    ValueArray ValueShape !(Array Int (Value m))
+  | -- | A record, which also subsumes tuples.
     ValueRecord (M.Map Name (Value m))
-  | ValueFun (Value m -> m (Value m))
-  | -- Stores the full shape.
+  | -- | A function value.
+    ValueFun (Value m -> m (Value m))
+  | -- | A sum value.
     ValueSum ValueShape Name [Value m]
-  | -- The shape, the update function, and the array.
+  | -- | Internal value: an accumulator. Represented by the shape, the update
+    -- function, and the array.
     ValueAcc ValueShape (Value m -> Value m -> m (Value m)) !(Array Int (Value m))
-  | -- A primitive value with added information used in automatic differentiation
+  | -- | Internal value: A primitive value with added information used in
+    -- automatic differentiation
     ValueAD AD.Depth AD.ADVariable
-  | -- A lazy reference to a value on a Futhark Server. We store the full shape
-    -- locally, along with the indexes applied so far.
+  | -- | A lazy reference to a value on a Futhark Server. These can be returned
+    -- by the interpreter, although the only sane way to use them for anything
+    -- is to retrieve them.
+    --
+    -- We store the full shape locally, along with the indexes applied so far.
     ValueLazyFFI ValueShape ValueRef [Int64]
 
 instance Show (Value m) where

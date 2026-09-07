@@ -36,7 +36,6 @@ import Futhark.Eval
 import Futhark.FreshNames (VNameSource)
 import Futhark.Server
 import Futhark.Test
-import Futhark.Test.Values
 import Futhark.Util
   ( directoryContents,
     ensureCacheDirectory,
@@ -607,16 +606,39 @@ videoBlock opts f = "![](" <> T.pack f <> ")" <> opts' <> "\n"
     loop = boolOpt "loop" videoLoop
     autoplay = boolOpt "autoplay" videoAutoplay
 
-plottable :: CompoundValue -> Maybe [Value]
-plottable (ValueTuple vs) = do
+-- | A tuple of one-dimensional arrays of the same length, which is what
+-- the plotting directives expect.
+plottable :: I.Value -> Maybe [Value]
+plottable (IV.ValueRecord fs) = do
+  vs <- areTupleFields fs
   (vs', ns') <- mapAndUnzipM inspect vs
   guard $ length (nubOrd ns') == 1
   Just vs'
   where
-    inspect (ValueAtom v)
-      | [n] <- valueShape v = Just (v, n)
-    inspect _ = Nothing
+    inspect v = do
+      v' <- dataValue v
+      case valueShape v' of
+        [n] -> Just (v', n)
+        _ -> Nothing
 plottable _ = Nothing
+
+-- | As 'plottable', but for exactly two arrays, interpreted as x and y
+-- values.
+plottable2d :: I.Value -> Maybe [Value]
+plottable2d v = do
+  [x, y] <- plottable v
+  Just [x, y]
+
+-- | The fields of a record, as expected by the plotting directives.
+-- Note that a tuple is also a record, so this must be tried only after
+-- 'plottable'.
+plottableFields :: (I.Value -> Maybe [Value]) -> I.Value -> Maybe [(T.Text, [Value])]
+plottableFields f (IV.ValueRecord fs)
+  | Nothing <- areTupleFields fs =
+      mapM onField $ M.toList fs
+  where
+    onField (k, v) = (F.nameToText k,) <$> f v
+plottableFields _ _ = Nothing
 
 withGnuplotData ::
   [(T.Text, T.Text)] ->
@@ -697,7 +719,7 @@ evalExp env e = do
 -- | As 'evalExp', but convert the value to the flat representation expected by
 -- the external programs we use. The description is used in the error message if
 -- the value has no such representation.
-evalExpToData :: Env -> T.Text -> UncheckedExp -> LiterateM CompoundValue
+evalExpToData :: Env -> T.Text -> UncheckedExp -> LiterateM Value
 evalExpToData env what e = do
   (t, v) <- evalExp env e
   case dataValue v of
@@ -705,22 +727,12 @@ evalExpToData env what e = do
     Nothing -> throwError $ "Cannot " <> what <> " value of type " <> prettyText t
 
 -- | Convert an interpreter value to the flat representation of the Futhark data
--- format. This is not possible for all values; in particular not for functions,
--- nor for empty arrays, whose element type cannot be recovered from the value
--- alone.
-dataValue :: I.Value -> Maybe CompoundValue
-dataValue (IV.ValuePrim v) = ValueAtom <$> primsToValue mempty [v]
-dataValue v@IV.ValueArray {} = ValueAtom <$> arrayToValue v
-dataValue (IV.ValueRecord fs)
-  | Just vs <- areTupleFields fs = ValueTuple <$> mapM dataValue vs
-  | otherwise =
-      ValueRecord . M.fromList <$> mapM onField (M.toList fs)
-  where
-    onField (f, v) = (F.nameToText f,) <$> dataValue v
-dataValue _ = Nothing
-
-arrayToValue :: I.Value -> Maybe Value
-arrayToValue v =
+-- format. Only primitives and arrays of primitives have such a representation,
+-- and not even all of those: the element type of an empty array cannot be
+-- recovered from the value alone.
+dataValue :: I.Value -> Maybe Value
+dataValue (IV.ValuePrim v) = primsToValue mempty [v]
+dataValue v@IV.ValueArray {} =
   primsToValue (SVec.fromList (map fromIntegral (dims (IV.valueShape v))))
     =<< prims v
   where
@@ -729,6 +741,7 @@ arrayToValue v =
     prims _ = Nothing
     dims (IV.ShapeDim n shape) = n : dims shape
     dims _ = []
+dataValue _ = Nothing
 
 -- | The elements must all be of the same type, which is that of the
 -- first one.
@@ -807,35 +820,28 @@ processDirective env (DirectiveRes e) = do
 --
 processDirective env (DirectiveImg e params) = do
   fmap imgBlock . newFile env (imgFile params, "img.png") $ \pngfile -> do
-    v <- evalExpToData env "create image from" e
-    case v of
-      ValueAtom v'
-        | Just bmp <- valueToBMP v' -> do
-            withTempDir $ \dir -> do
-              let bmpfile = dir </> "img.bmp"
-              liftIO $ LBS.writeFile bmpfile bmp
-              void $ system "convert" [bmpfile, pngfile] mempty
-      _ ->
+    (t, v) <- evalExp env e
+    case valueToBMP =<< dataValue v of
+      Just bmp ->
+        withTempDir $ \dir -> do
+          let bmpfile = dir </> "img.bmp"
+          liftIO $ LBS.writeFile bmpfile bmp
+          void $ system "convert" [bmpfile, pngfile] mempty
+      Nothing ->
         throwError $
-          "Cannot create image from value of type " <> prettyText (fmap valueType v)
+          "Cannot create image from value of type " <> prettyText t
 --
 processDirective env (DirectivePlot e size) = do
   fmap imgBlock . newFile env (Nothing, "plot.png") $ \pngfile -> do
-    v <- evalExpToData env "plot" e
-    case v of
-      _
-        | Just vs <- plottable2d v ->
-            plotWith [(Nothing, vs)] pngfile
-      ValueRecord m
-        | Just m' <- traverse plottable2d m -> do
-            plotWith (map (first Just) $ M.toList m') pngfile
+    (t, v) <- evalExp env e
+    case (plottable2d v, plottableFields plottable2d v) of
+      (Just vs, _) ->
+        plotWith [(Nothing, vs)] pngfile
+      (_, Just fs) ->
+        plotWith (map (first Just) fs) pngfile
       _ ->
-        throwError $ "Cannot plot value of type " <> prettyText (fmap valueType v)
+        throwError $ "Cannot plot value of type " <> prettyText t
   where
-    plottable2d v = do
-      [x, y] <- plottable v
-      Just [x, y]
-
     tag (Nothing, xys) j = ("data" <> showText (j :: Int), xys)
     tag (Just f, xys) _ = (f, xys)
 
@@ -863,13 +869,12 @@ processDirective env (DirectivePlot e size) = do
 --
 processDirective env (DirectiveGnuplot e script) = do
   fmap imgBlock . newFile env (Nothing, "plot.png") $ \pngfile -> do
-    v <- evalExpToData env "plot" e
-    case v of
-      ValueRecord m
-        | Just m' <- traverse plottable m ->
-            plotWith (M.toList m') pngfile
-      _ ->
-        throwError $ "Cannot plot value of type " <> prettyText (fmap valueType v)
+    (t, v) <- evalExp env e
+    case plottableFields plottable v of
+      Just fs ->
+        plotWith fs pngfile
+      Nothing ->
+        throwError $ "Cannot plot value of type " <> prettyText t
   where
     plotWith xys pngfile = withGnuplotData [] xys $ \_ sets -> do
       let script' =
@@ -900,13 +905,12 @@ processDirective env (DirectiveVideo e params) = do
         | Just (IV.ValueFun {} : _) <- areTupleFields fs ->
             throwError
               "Producing a video from a step function is not yet supported."
-      _ -> case dataValue v of
-        Just (ValueAtom arr)
-          | Just bmps <- valueToBMPs arr ->
-              withTempDir $ \dir -> do
-                zipWithM_ (writeBMPFile dir) [0 ..] bmps
-                onWebM videofile =<< bmpsToVideo dir
-        _ -> nope
+      _ -> case valueToBMPs =<< dataValue v of
+        Just bmps ->
+          withTempDir $ \dir -> do
+            zipWithM_ (writeBMPFile dir) [0 ..] bmps
+            onWebM videofile =<< bmpsToVideo dir
+        Nothing -> nope
   where
     framerate = fromMaybe 30 $ videoFPS params
     format = fromMaybe "webm" $ videoFormat params
@@ -985,7 +989,7 @@ processDirective env (DirectiveAudio e params) = do
       let Just bytes = toBytes v
       liftIO $ LBS.writeFile rawfile $ LBS.fromStrict bytes
 
-    toRawFiles dir (ValueAtom v)
+    toRawFiles dir v
       | length (valueShape v) == 1,
         Just input_format <- toFfmpegFormat v = do
           writeRaw dir "raw.pcm" v
@@ -1001,7 +1005,7 @@ processDirective env (DirectiveAudio e params) = do
               )
               (valueElems v)
               [0 :: Int ..]
-    toRawFiles _ v = nope $ fmap valueType v
+    toRawFiles _ v = nope $ valueTypeText $ valueType v
 
     toFfmpegFormat I8Value {} = Just "s8"
     toFfmpegFormat U8Value {} = Just "u8"
@@ -1025,7 +1029,7 @@ processDirective env (DirectiveAudio e params) = do
 
     output_format = fromMaybe "wav" $ audioCodec params
     sampling_frequency = fromMaybe 44100 $ audioSamplingFrequency params
-    nope _ = throwError "Cannot create audio from value"
+    nope t = throwError $ "Cannot create audio from value of type " <> t
 
 -- Did this script block succeed or fail?
 data Failure = Failure | Success
