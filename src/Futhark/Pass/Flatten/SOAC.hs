@@ -564,18 +564,18 @@ versionScanRed ops desc segments env inps res aux w factored_body outer_only = d
         [ t `arrayOfShape` segmentsShape segments
         | DistResult _ (DistType _ _ t) _ <- res
         ]
-  outer_body <- renamedBody outer_only
-  full_body <- case segments of
-    -- Top-level (no enclosing segments): flatten the factored body's statements
-    -- as ordinary top-level statements. Unlike distributing them over segments,
-    -- this copes with array-valued operators and nested SOACs whose temporaries
-    -- would otherwise escape the segmented machinery's scope.
-    [] ->
-      renameBody <=< buildBody_ $ do
-        mapM_ (flattenTopLevelStm ops) $ bodyStms factored_body
-        pure $ bodyResult factored_body
-    _ ->
-      renamedBody $ regularRepVars <$> distributeAndFlattenBody ops segments "versionScanRed_full_body" env inps res factored_body
+  let fullFlatten = case segments of
+        -- Top-level (no enclosing segments): flatten the factored body's
+        -- statements as ordinary top-level statements. Unlike distributing them
+        -- over segments, this copes with array-valued operators and nested
+        -- SOACs whose temporaries would otherwise escape the segmented
+        -- machinery's scope.
+        [] ->
+          renameBody <=< buildBody_ $ do
+            mapM_ (flattenTopLevelStm ops) $ bodyStms factored_body
+            pure $ bodyResult factored_body
+        _ ->
+          renamedBody $ regularRepVars <$> distributeAndFlattenBody ops segments "versionScanRed_full_body" env inps res factored_body
 
   match_res <-
     certifying (distCerts inps aux env) $
@@ -586,8 +586,8 @@ versionScanRed ops desc segments env inps res aux w factored_body outer_only = d
         (isParallelFunInside (flattenFunHasParallelism ops) factored_body)
         (allowVersioning (flattenSegLevel ops))
         (segments <> pure w)
-        full_body
-        outer_body
+        fullFlatten
+        (renamedBody outer_only)
   pure $ insertRegulars (map distResTag res) match_res env
 
 insertSegOpMapResults ::
@@ -1101,9 +1101,9 @@ transformInnerMap ops segments env inps pat w arrs map_lam = do
 -- per-enclosing-segment values.
 transformMap ::
   FlattenOps ->
-  -- | Incremental-flattening attributes of the enclosing statement, propagated
-  -- onto the (preprocessed) body in the top-level case; see
-  -- 'transformTopLevelMap'.
+  -- | Incremental-flattening attributes of the map itself. These are
+  -- propagated onto the (preprocessed) body, and so eventually reach maps at
+  -- any depth of the nest.
   Attrs ->
   Segments ->
   DistEnv ->
@@ -1115,8 +1115,8 @@ transformMap ::
   FlattenM [ResRep]
 transformMap ops attrs [] _env _inps pat w arrs map_lam = do
   -- Top-level map (no enclosing segments). Preprocess the body and then
-  -- propagate the enclosing attributes onto it, so they influence how the body
-  -- is versioned (e.g. only_inner reaching a Screma produced by interchanging a
+  -- propagate the attributes onto it, so they influence how the body is
+  -- versioned (e.g. only_inner reaching a Screma produced by interchanging a
   -- 'sequential_outer' loop). Order matters: preprocessing may rewrite a body
   -- statement, so propagating first would lose the attributes on the rewritten
   -- form. XXX: this is arguably a bug in preprocessing.
@@ -1125,10 +1125,12 @@ transformMap ops attrs [] _env _inps pat w arrs map_lam = do
     fmap (propagateVersioningAttrs attrs) . renameLambda
       =<< preprocessLambda scope map_lam
   transformTopLevelMap ops pat w arrs lam
-transformMap ops _attrs segments env inps pat w arrs map_lam = do
+transformMap ops attrs segments env inps pat w arrs map_lam = do
+  -- Nested map. As in the top-level case, propagate the attributes onto the
+  -- preprocessed body; this is what carries them to maps deeper in the nest.
   gpu_scope <- askScope
   let pp_scope = castScope $ scopeOfDistInputs inps <> gpu_scope
-  lam <- preprocessLambda pp_scope map_lam
+  lam <- propagateVersioningAttrs attrs <$> preprocessLambda pp_scope map_lam
   transformInnerMap ops segments env inps pat w arrs lam
 
 -- | Fully flatten a map that has no enclosing segments (a top-level map). This
@@ -1239,10 +1241,7 @@ versionedUniformMap ops segments env inps ress pat aux w arrs map_lam = do
       outerOnly =
         runMapLambdaBody segments env inps w arrs map_lam pat ress
 
-  full_body <- renamedBody fullFlatten
-  outer_body <- renamedBody outerOnly
-
-  let result_ts =
+      result_ts =
         [ t `arrayOfShape` segmentsShape segments
         | DistResult _ (DistType _ _ t) _ <- ress
         ]
@@ -1258,8 +1257,8 @@ versionedUniformMap ops segments env inps ress pat aux w arrs map_lam = do
         False
         (worthSequentialising map_lam)
         (segments <> pure w)
-        full_body
-        outer_body
+        (renamedBody fullFlatten)
+        (renamedBody outerOnly)
         intra'
 
   pure $ insertRegulars (map distResTag ress) match_res env
@@ -1282,7 +1281,7 @@ flattenUniformRedomap ops segments env inps res pat aux w arrs form reds map_lam
   let outer_only = transformUniformRedomap (flattenSegLevel ops) segments env inps w arrs reds map_lam
   gpu_scope <- askScope
   let pp_scope = castScope $ scopeOfDistInputs inps <> gpu_scope
-  factored <- factorScremaForParallelism funHasParallelism pp_scope (stmAuxCerts aux) pat w arrs form
+  factored <- factorScremaForParallelism funHasParallelism pp_scope aux pat w arrs form
   case factored of
     Just body ->
       versionScanRed ops "uniform_redomap_alt" segments env inps res aux w body outer_only
@@ -1365,7 +1364,7 @@ flattenUniformMaposcanomap ops segments env inps res pat aux w arrs form scans p
         transformUniformMaposcanomap lvl segments env inps w arrs scans post_lam map_lam
   gpu_scope <- askScope
   let pp_scope = castScope $ scopeOfDistInputs inps <> gpu_scope
-  factored <- factorScremaForParallelism funHasParallelism pp_scope (stmAuxCerts aux) pat w arrs form
+  factored <- factorScremaForParallelism funHasParallelism pp_scope aux pat w arrs form
   case factored of
     Just body ->
       versionScanRed ops "uniform_maposcanomap_alt" segments env inps res aux w body outer_only
@@ -1449,7 +1448,7 @@ flattenOtherScrema ::
 flattenOtherScrema ops segments env inps res pat aux w arrs form = do
   gpu_scope <- askScope
   let pp_scope = castScope $ scopeOfDistInputs inps <> gpu_scope
-  factored <- factorScremaForParallelism funHasParallelism pp_scope (stmAuxCerts aux) pat w arrs form
+  factored <- factorScremaForParallelism funHasParallelism pp_scope aux pat w arrs form
   case factored of
     Just body -> do
       reps <- distributeAndFlattenBody ops segments "factorScremaForParallelism_body" env inps res body

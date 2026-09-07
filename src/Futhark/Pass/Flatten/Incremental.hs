@@ -48,6 +48,7 @@ module Futhark.Pass.Flatten.Incremental
     mapAlternatives,
     scanRedAlternatives,
     propagateVersioningAttrs,
+    imposeAttrs,
 
     -- * Transforming code
     factorScremaForParallelism,
@@ -70,7 +71,6 @@ import Control.Monad
 import Control.Monad.State
 import Data.Foldable
 import Data.Maybe (isJust)
-import Data.Set qualified as S
 import Futhark.IR.GPU
 import Futhark.IR.SOACS
 import Futhark.Pass.Flatten.Distribute
@@ -234,13 +234,13 @@ intraBlockAlternative intra = do
         (varsRes $ Intrablock.intraResultNames intra)
   pure (intra_ok, intra_body)
 
--- | Construct the multi-versioned alternatives for a map, given the
--- fully-flattened body, the outer-parallel-only body, and an optional
--- intrablock result. This is the shared versioning policy used both for
--- top-level maps and for maps nested inside a map-nest; the only differences
--- between the two are which bodies are supplied and how their results are
--- consumed, both of which are handled by the caller. The @ws@ are the widths
--- whose product bounds the outer parallelism (used for the threshold
+-- | Construct the multi-versioned alternatives for a map, given actions that
+-- construct the fully-flattened body and the outer-parallel-only body, and an
+-- optional intrablock result. This is the shared versioning policy used both
+-- for top-level maps and for maps nested inside a map-nest; the only
+-- differences between the two are which bodies are supplied and how their
+-- results are consumed, both of which are handled by the caller. The @ws@ are
+-- the widths whose product bounds the outer parallelism (used for the threshold
 -- comparison). Returns the names bound to the final results.
 mapAlternatives ::
   -- | Description for the result bindings.
@@ -252,47 +252,54 @@ mapAlternatives ::
   -- | Is the body worth sequentialising (offering an outer-only version)?
   Bool ->
   [SubExp] ->
-  Body GPU ->
-  Body GPU ->
+  -- | Construct the fully flattened body.
+  FlattenM (Body GPU) ->
+  -- | Construct the outer-parallelism-only body.
+  FlattenM (Body GPU) ->
   Maybe Intrablock.IntrablockResult ->
   FlattenM [VName]
-mapAlternatives desc result_ts attrs parallel_fun_inside worth_seq ws full_body outer_body intra' =
+mapAlternatives desc result_ts attrs parallel_fun_inside worth_seq ws mkFullBody mkOuterBody intra' =
   case intra' of
     _
       | parallel_fun_inside ->
-          kernelAlternatives desc result_ts full_body []
-      | "sequential_inner" `inAttrs` attrs ->
+          full []
+      | "sequential_inner" `inAttrs` attrs -> do
+          outer_body <- mkOuterBody
           kernelAlternatives desc result_ts outer_body []
     Nothing
       | not only_intra,
         worth_seq,
-        mayExploitOuter attrs -> do
-          (outer_suff, _) <- outerSuff
-          kernelAlternatives desc result_ts full_body [(outer_suff, outer_body)]
+        mayExploitOuter attrs ->
+          full . pure =<< outerAlternative
       | otherwise ->
-          kernelAlternatives desc result_ts full_body []
+          full []
     Just intra_res
       | only_intra -> do
           (_, intra_body) <- intraBlockAlternative intra_res
           kernelAlternatives desc result_ts intra_body []
       | worth_seq,
         mayExploitOuter attrs -> do
-          (outer_suff, _) <- outerSuff
+          outer_alt <- outerAlternative
           intra_alt <- intraBlockAlternative intra_res
-          kernelAlternatives desc result_ts full_body [(outer_suff, outer_body), intra_alt]
-      | otherwise -> do
-          intra_alt <- intraBlockAlternative intra_res
-          kernelAlternatives desc result_ts full_body [intra_alt]
+          full [outer_alt, intra_alt]
+      | otherwise ->
+          full . pure =<< intraBlockAlternative intra_res
   where
     only_intra = onlyExploitIntra attrs
 
-    outerSuff = sufficientParallelism suffOuterPar ws mempty Nothing
+    full alts = do
+      full_body <- mkFullBody
+      kernelAlternatives desc result_ts full_body alts
 
--- | Construct the multi-versioned alternatives for a scan or reduce, given the
--- fully-flattened body and the outer-parallel-only body. Unlike
--- 'mapAlternatives' there is no intrablock version, and the outer-only version
--- is always offered (subject to attributes). Shared between top-level and
--- nested uniform scans/reduces.
+    outerAlternative = do
+      outer_body <- mkOuterBody
+      (outer_suff, _) <- sufficientParallelism suffOuterPar ws mempty Nothing
+      pure (outer_suff, outer_body)
+
+-- | Construct the multi-versioned alternatives for a scan or reduce, given
+-- actions that construct the fully-flattened body and the outer-parallel-only
+-- body. Unlike 'mapAlternatives' there is no intrablock version, and the
+-- outer-only version is always offered (subject to attributes).
 scanRedAlternatives ::
   Name ->
   [Type] ->
@@ -302,10 +309,12 @@ scanRedAlternatives ::
   -- | Does the seg level permit versioning at all (false in-block)?
   Bool ->
   [SubExp] ->
-  Body GPU ->
-  Body GPU ->
+  -- | Construct the fully flattened body.
+  FlattenM (Body GPU) ->
+  -- | Construct the outer-parallelism-only body.
+  FlattenM (Body GPU) ->
   FlattenM [VName]
-scanRedAlternatives desc result_ts attrs parallel_fun_inside allow_versioning ws full_body outer_body
+scanRedAlternatives desc result_ts attrs parallel_fun_inside allow_versioning ws mkFullBody mkOuterBody
   | parallel_fun_inside =
       fullAlternative
   | "sequential_inner" `inAttrs` attrs =
@@ -315,11 +324,17 @@ scanRedAlternatives desc result_ts attrs parallel_fun_inside allow_versioning ws
   | otherwise =
       fullAlternative
   where
-    fullAlternative = kernelAlternatives desc result_ts full_body []
+    fullAlternative = do
+      full_body <- mkFullBody
+      kernelAlternatives desc result_ts full_body []
 
-    outerAlternative = kernelAlternatives desc result_ts outer_body []
+    outerAlternative = do
+      outer_body <- mkOuterBody
+      kernelAlternatives desc result_ts outer_body []
 
     fullWithOuterAlternative = do
+      outer_body <- mkOuterBody
+      full_body <- mkFullBody
       (outer_suff, _) <- sufficientParallelism suffOuterPar ws mempty Nothing
       kernelAlternatives desc result_ts full_body [(outer_suff, outer_body)]
 
@@ -454,13 +469,13 @@ factorScremaForParallelism ::
   (MonadBuilder m) =>
   FunHasParallelism ->
   Scope SOACS ->
-  Certs ->
+  StmAux () ->
   Pat Type ->
   SubExp ->
   [VName] ->
   ScremaForm SOACS ->
   m (Maybe (Body SOACS))
-factorScremaForParallelism funHasParallelism scope certs pat w arrs form
+factorScremaForParallelism funHasParallelism scope aux pat w arrs form
   | Just (reds, map_lam) <- isRedomapSOAC form,
     lambdaHasMeaningfulParallelism funHasParallelism map_lam = do
       map_lam' <- preprocessLambda scope map_lam
@@ -501,24 +516,45 @@ factorScremaForParallelism funHasParallelism scope certs pat w arrs form
       pure Nothing
   where
     mkFactoredBody stms = do
-      stms' <- fmap (certify certs) <$> preprocessStms scope stms
+      stms' <-
+        fmap (propagateAttrs (stmAuxAttrs aux) . certify (stmAuxCerts aux))
+          <$> preprocessStms scope stms
       pure $ mkBody stms' $ varsRes $ patNames pat
+
+-- | Add the flattening attributes of the enclosing context to a statement. A
+-- statement that carries flattening attributes of its own is left alone, as
+-- those are more specific.
+propagateAttrs :: Attrs -> Stm SOACS -> Stm SOACS
+propagateAttrs attrs stm
+  | attrs' == mempty = stm
+  | flatteningAttrs (stmAuxAttrs (stmAux stm)) == mempty =
+      stm {stmAux = (stmAux stm) {stmAuxAttrs = attrs' <> stmAuxAttrs (stmAux stm)}}
+  | otherwise = stm
+  where
+    -- 'flatteningAttrs' strips the enclosing 'flattening', which has to be put
+    -- back for the attributes to be recognised on the statement.
+    attrs' =
+      mconcat . mapAttrs (oneAttr . AttrComp "flattening" . pure) $
+        flatteningAttrs attrs
+
+-- | Impose outside flattening attributes on a statement. Only SOACs are
+-- affected, and only those that carry no flattening attributes of their own, as
+-- those are more specific.
+imposeAttrs :: Attrs -> Stm SOACS -> Stm SOACS
+imposeAttrs attrs stm
+  | Op {} <- stmExp stm = propagateAttrs attrs stm
+  | otherwise = stm
 
 -- | Propagate incremental flattening attributes to the statements of
 -- a map lambda body. Statements that carry their own incremental
 -- flattening attributes are left alone.
 propagateVersioningAttrs :: Attrs -> Lambda SOACS -> Lambda SOACS
 propagateVersioningAttrs attrs lam
-  | attrs' == mempty = lam
+  | flatteningAttrs attrs == mempty = lam
   | otherwise =
-      lam {lambdaBody = (lambdaBody lam) {bodyStms = fmap onStm (bodyStms (lambdaBody lam))}}
-  where
-    attrs' = versioningAttrs attrs
-    onStm stm
-      | versioningAttrs (stmAuxAttrs (stmAux stm)) == mempty =
-          stm {stmAux = (stmAux stm) {stmAuxAttrs = attrs' <> stmAuxAttrs (stmAux stm)}}
-      | otherwise = stm
-    versioningAttrs (Attrs s) = Attrs $ S.filter isVersioningAttr s
-    isVersioningAttr (AttrComp "incremental_flattening" _) = True
-    isVersioningAttr (AttrComp "flattening" _) = True
-    isVersioningAttr _ = False
+      lam
+        { lambdaBody =
+            (lambdaBody lam)
+              { bodyStms = fmap (propagateAttrs attrs) (bodyStms (lambdaBody lam))
+              }
+        }

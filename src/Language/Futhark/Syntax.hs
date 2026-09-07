@@ -213,6 +213,7 @@ instance IsPrimValue Bool where
 -- | The value of an v'AttrAtom'.
 data AttrAtom vn
   = AtomName Name
+  | AtomVar vn
   | AtomInt Integer
   deriving (Eq, Ord, Show)
 
