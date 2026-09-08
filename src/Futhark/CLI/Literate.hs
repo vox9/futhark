@@ -6,6 +6,7 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Free.Church (F, runF)
 import Control.Monad.State hiding (State)
+import Control.Monad.Trans.Maybe (MaybeT (..), hoistMaybe)
 import Data.Array qualified as A
 import Data.Bifunctor (first, second)
 import Data.Bits
@@ -39,6 +40,7 @@ import Futhark.Test
 import Futhark.Util
   ( directoryContents,
     ensureCacheDirectory,
+    fancyTerminal,
     hashText,
     nubOrd,
     runProgramWithExitCode,
@@ -48,6 +50,7 @@ import Futhark.Util.Loc qualified as Loc
 import Futhark.Util.Options
 import Futhark.Util.Pretty (prettyText, prettyTextOneLine)
 import Futhark.Util.Pretty qualified as PP
+import Futhark.Util.ProgressBar
 import Language.Futhark.Interpreter qualified as I
 import Language.Futhark.Interpreter.FFI.ServerM qualified as FFI
 import Language.Futhark.Interpreter.Values qualified as IV
@@ -606,39 +609,42 @@ videoBlock opts f = "![](" <> T.pack f <> ")" <> opts' <> "\n"
     loop = boolOpt "loop" videoLoop
     autoplay = boolOpt "autoplay" videoAutoplay
 
--- | A tuple of one-dimensional arrays of the same length, which is what
--- the plotting directives expect.
-plottable :: I.Value -> Maybe [Value]
-plottable (IV.ValueRecord fs) = do
-  vs <- areTupleFields fs
+-- | A tuple of one-dimensional arrays of the same length, which is what the
+-- plotting directives expect.
+plottable :: Env -> I.Value -> LiterateM (Maybe [Value])
+plottable env (IV.ValueRecord fs) = runMaybeT $ do
+  vs <- hoistMaybe $ areTupleFields fs
   (vs', ns') <- mapAndUnzipM inspect vs
   guard $ length (nubOrd ns') == 1
-  Just vs'
+  pure vs'
   where
     inspect v = do
-      v' <- dataValue v
+      v' <- MaybeT $ dataValue env v
       case valueShape v' of
-        [n] -> Just (v', n)
-        _ -> Nothing
-plottable _ = Nothing
+        [n] -> pure (v', n)
+        _ -> hoistMaybe Nothing
+plottable _ _ = pure Nothing
 
--- | As 'plottable', but for exactly two arrays, interpreted as x and y
--- values.
-plottable2d :: I.Value -> Maybe [Value]
-plottable2d v = do
-  [x, y] <- plottable v
-  Just [x, y]
+-- | As 'plottable', but for exactly two arrays, interpreted as x and y values.
+plottable2d :: Env -> I.Value -> LiterateM (Maybe [Value])
+plottable2d env v = do
+  vs <- plottable env v
+  pure $ case vs of
+    Just [x, y] -> Just [x, y]
+    _ -> Nothing
 
--- | The fields of a record, as expected by the plotting directives.
--- Note that a tuple is also a record, so this must be tried only after
--- 'plottable'.
-plottableFields :: (I.Value -> Maybe [Value]) -> I.Value -> Maybe [(T.Text, [Value])]
+-- | The fields of a record, as expected by the plotting directives. Note that a
+-- tuple is also a record, so this must be tried only after 'plottable'.
+plottableFields ::
+  (I.Value -> LiterateM (Maybe [Value])) ->
+  I.Value ->
+  LiterateM (Maybe [(T.Text, [Value])])
 plottableFields f (IV.ValueRecord fs)
   | Nothing <- areTupleFields fs =
-      mapM onField $ M.toList fs
+      runMaybeT $ mapM onField $ M.toList fs
   where
-    onField (k, v) = (F.nameToText k,) <$> f v
-plottableFields _ _ = Nothing
+    onField (k, v) = (F.nameToText k,) <$> MaybeT (f v)
+plottableFields _ _ = pure Nothing
 
 withGnuplotData ::
   [(T.Text, T.Text)] ->
@@ -712,9 +718,21 @@ evalExp env e = do
     (_, Right ([], fexp)) -> pure fexp
     (_, Right (_, fexp)) ->
       throwError $ "Ambiguous type of expression: " <> prettyText (typeOf fexp)
-  v <- runInterpreter env $ I.interpretExp (envCtx env) fexp
+  (typeOf fexp,) <$> runInterpreter env (I.interpretExp (envCtx env) fexp)
+
+-- | As 'evalExp', but also fetch any parts of the value that reside on
+-- the server.
+evalExpForced :: Env -> UncheckedExp -> LiterateM (F.StructType, I.Value)
+evalExpForced env e = do
+  (t, v) <- evalExp env e
+  (t,) <$> force env v
+
+-- | Fetch a value that resides on the server. Anything we do with a
+-- value, except passing it back to the server, needs it in full.
+force :: Env -> I.Value -> LiterateM I.Value
+force env v = do
   v' <- liftIO $ forceValue (Just (envServer env)) v
-  (typeOf fexp,) <$> either (throwError . PP.docText . I.prettyInterpreterError) pure v'
+  either (throwError . PP.docText . I.prettyInterpreterError) pure v'
 
 -- | As 'evalExp', but convert the value to the flat representation expected by
 -- the external programs we use. The description is used in the error message if
@@ -722,17 +740,16 @@ evalExp env e = do
 evalExpToData :: Env -> T.Text -> UncheckedExp -> LiterateM Value
 evalExpToData env what e = do
   (t, v) <- evalExp env e
-  case dataValue v of
-    Just v' -> pure v'
-    Nothing -> throwError $ "Cannot " <> what <> " value of type " <> prettyText t
+  let nope = "Cannot " <> what <> " value of type " <> prettyText t
+  maybe (throwError nope) pure =<< dataValue env v
 
--- | Convert an interpreter value to the flat representation of the Futhark data
--- format. Only primitives and arrays of primitives have such a representation,
--- and not even all of those: the element type of an empty array cannot be
--- recovered from the value alone.
-dataValue :: I.Value -> Maybe Value
-dataValue (IV.ValuePrim v) = primsToValue mempty [v]
-dataValue v@IV.ValueArray {} =
+-- | As 'dataValue', but for a value that is already present in full. Only
+-- primitives and arrays of primitives have a flat representation, and not even
+-- all of those: the element type of an empty array cannot be recovered from the
+-- value alone.
+localDataValue :: I.Value -> Maybe Value
+localDataValue (IV.ValuePrim v) = primsToValue mempty [v]
+localDataValue v@IV.ValueArray {} =
   primsToValue (SVec.fromList (map fromIntegral (dims (IV.valueShape v))))
     =<< prims v
   where
@@ -741,7 +758,24 @@ dataValue v@IV.ValueArray {} =
     prims _ = Nothing
     dims (IV.ShapeDim n shape) = n : dims shape
     dims _ = []
-dataValue _ = Nothing
+localDataValue _ = Nothing
+
+-- | Convert an interpreter value to the flat representation of the Futhark data
+-- format, if it has one. A value that resides on the server is retrieved in its
+-- entirety, which is far faster than forcing it, as that fetches an array one
+-- element at a time.
+dataValue :: Env -> I.Value -> LiterateM (Maybe Value)
+dataValue env v@(IV.ValueLazyFFI _ vr []) = do
+  r <- liftIO $ FFI.runServerM (envServer env) $ FFI.getData vr
+  case r of
+    Right (Just v') -> pure $ Just v'
+    -- The value is opaque, or something went wrong; fall back to
+    -- fetching it piecemeal, which may still work.
+    _ -> dataValue env =<< force env v
+dataValue env v@IV.ValueLazyFFI {} =
+  -- A partially indexed array cannot be retrieved directly.
+  dataValue env =<< force env v
+dataValue _ v = pure $ localDataValue v
 
 -- | The elements must all be of the same type, which is that of the
 -- first one.
@@ -814,18 +848,19 @@ processDirective env (DirectiveCovert d) =
 processDirective env (DirectiveRes e) = do
   result <-
     newFileContents env (Nothing, "eval.txt") $ \resultf -> do
-      v <- snd <$> evalExp env e
+      v <- snd <$> evalExpForced env e
       liftIO $ T.writeFile resultf $ PP.docText $ I.prettyValue v
   pure $ T.unlines ["```", result, "```"]
 --
 processDirective env (DirectiveImg e params) = do
   fmap imgBlock . newFile env (imgFile params, "img.png") $ \pngfile -> do
     (t, v) <- evalExp env e
-    case valueToBMP =<< dataValue v of
-      Just bmp ->
+    bmp <- (valueToBMP =<<) <$> dataValue env v
+    case bmp of
+      Just bmp' ->
         withTempDir $ \dir -> do
           let bmpfile = dir </> "img.bmp"
-          liftIO $ LBS.writeFile bmpfile bmp
+          liftIO $ LBS.writeFile bmpfile bmp'
           void $ system "convert" [bmpfile, pngfile] mempty
       Nothing ->
         throwError $
@@ -834,7 +869,9 @@ processDirective env (DirectiveImg e params) = do
 processDirective env (DirectivePlot e size) = do
   fmap imgBlock . newFile env (Nothing, "plot.png") $ \pngfile -> do
     (t, v) <- evalExp env e
-    case (plottable2d v, plottableFields plottable2d v) of
+    one <- plottable2d env v
+    fields <- plottableFields (plottable2d env) v
+    case (one, fields) of
       (Just vs, _) ->
         plotWith [(Nothing, vs)] pngfile
       (_, Just fs) ->
@@ -870,7 +907,8 @@ processDirective env (DirectivePlot e size) = do
 processDirective env (DirectiveGnuplot e script) = do
   fmap imgBlock . newFile env (Nothing, "plot.png") $ \pngfile -> do
     (t, v) <- evalExp env e
-    case plottableFields plottable v of
+    fields <- plottableFields (plottable env) v
+    case fields of
       Just fs ->
         plotWith fs pngfile
       Nothing ->
@@ -898,23 +936,64 @@ processDirective env (DirectiveVideo e params) = do
           throwError $
             "Cannot produce video from value of type " <> prettyText t
     case v of
-      -- TODO: support the (step, state, num_frames) form.  That
-      -- requires applying a function value, which we cannot do from
-      -- outside the interpreter.
       IV.ValueRecord fs
-        | Just (IV.ValueFun {} : _) <- areTupleFields fs ->
-            throwError
-              "Producing a video from a step function is not yet supported."
-      _ -> case valueToBMPs =<< dataValue v of
-        Just bmps ->
-          withTempDir $ \dir -> do
-            zipWithM_ (writeBMPFile dir) [0 ..] bmps
-            onWebM videofile =<< bmpsToVideo dir
-        Nothing -> nope
+        | Just [stepfun@IV.ValueFun {}, initial, num_frames] <- areTupleFields fs,
+          IV.ValuePrim (F.SignedValue (P.Int64Value num_frames')) <- num_frames ->
+            withTempDir $ \dir -> do
+              renderFrames dir stepfun initial $ fromIntegral num_frames'
+              onWebM videofile =<< bmpsToVideo dir
+      _ -> do
+        bmps <- (valueToBMPs =<<) <$> dataValue env v
+        case bmps of
+          Just bmps' ->
+            withTempDir $ \dir -> do
+              zipWithM_ (writeBMPFile dir) [0 ..] bmps'
+              onWebM videofile =<< bmpsToVideo dir
+          Nothing -> nope
   where
     framerate = fromMaybe 30 $ videoFPS params
     format = fromMaybe "webm" $ videoFormat params
     bmpfile dir j = dir </> printf "frame%010d.bmp" (j :: Int)
+
+    (progressStep, progressDone)
+      | fancyTerminal,
+        scriptVerbose (envOpts env) > 0 =
+          ( \j num_frames -> liftIO $ do
+              T.putStr $
+                "\r"
+                  <> progressBar
+                    (ProgressBar 40 (fromIntegral num_frames - 1) (fromIntegral j))
+                  <> "generating frame "
+                  <> prettyText (j + 1)
+                  <> "/"
+                  <> prettyText num_frames
+                  <> " "
+              hFlush stdout,
+            liftIO $ T.putStrLn ""
+          )
+      | otherwise =
+          (\_ _ -> pure (), pure ())
+
+    -- Only the image of each frame is fetched from the server; the
+    -- state is passed straight back to the step function, so all the
+    -- frames need not exist at once.
+    renderFrames dir stepfun initial num_frames = do
+      foldM_ frame initial [0 .. num_frames - 1]
+      progressDone
+      where
+        frame old_state j = do
+          progressStep j num_frames
+          v <- runInterpreter env $ I.interpretApply (envCtx env) stepfun old_state
+          case v of
+            IV.ValueRecord fs
+              | Just [arr, new_state] <- areTupleFields fs -> do
+                  bmp <-
+                    maybe badFrame pure . (valueToBMP =<<) =<< dataValue env arr
+                  writeBMPFile dir j bmp
+                  pure new_state
+            _ -> badFrame
+        badFrame =
+          throwError "Cannot handle step function return value."
 
     writeBMPFile dir j bmp =
       liftIO $ LBS.writeFile (bmpfile dir j) bmp

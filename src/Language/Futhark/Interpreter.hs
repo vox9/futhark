@@ -11,6 +11,7 @@ module Language.Futhark.Interpreter
     initialCtx,
     interpretExp,
     interpretDec,
+    interpretApply,
     interpretImport,
     interpretFunction,
     ctxWithImports,
@@ -2450,8 +2451,15 @@ intrinsicsNeg = intrinsicVal "neg"
 intrinsicsNot :: Value
 intrinsicsNot = intrinsicVal "!"
 
+-- | Interpret a single expression.
 interpretExp :: Ctx -> Exp -> F ExtOp Value
 interpretExp ctx e = runEvalM (ctxImports ctx) $ eval (ctxEnv ctx) e
+
+-- | Interpret an application of a function value to an argument value. It
+-- better be well-typed!
+interpretApply :: Ctx -> Value -> Value -> F ExtOp Value
+interpretApply ctx f arg =
+  runEvalM (ctxImports ctx) $ apply mempty (ctxEnv ctx) f arg
 
 interpretDecs :: Ctx -> [Dec] -> F ExtOp Env
 interpretDecs ctx decs =

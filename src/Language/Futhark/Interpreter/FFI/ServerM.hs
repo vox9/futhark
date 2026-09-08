@@ -17,6 +17,7 @@ module Language.Futhark.Interpreter.FFI.ServerM
     -- Primitives
     getPrim,
     putPrim,
+    getData,
     -- Arrays
     rank,
     elemType,
@@ -221,6 +222,15 @@ shape vr = do
   s <- askServer
   vn <- varName vr
   map fromIntegral <$> (liftIO (S.cmdShape s vn) >>= throwServerLeft ("cmdShape failed on variable " ++ T.unpack vn ++ "."))
+
+-- | Retrieve an entire value from the server at once. This is only possible for
+-- values that can be represented in the Futhark data format (primitives and
+-- arrays of primitive).
+getData :: ValueRef -> ServerM (Maybe D.Value)
+getData vr = do
+  s <- askServer
+  n <- varName vr
+  either (const Nothing) Just <$> liftIO (S.getValue s n)
 
 index :: [Int64] -> ValueRef -> ServerM ValueRef
 index is src = do
